@@ -560,7 +560,7 @@
     },
     {
       "id": "killers-retention-shadow-v1",
-      "amendments": [{"date": "2026-09-16", "reason": "Accounting implementation completed before any prospective completed pairs. Original epoch and +2R/1R policy unchanged. Settled exchange fills/funding and causal account taker fees now drive paired replay; fixed quoted, one-sample/half-depth/10bps, and two-sample/quarter-depth/25bps stresses, with date-clustered uncertainty and explicit exclusions. See research/profit_retention/ACCOUNTING.md. No live promotion authorized."}],
+      "amendments": [{"date": "2026-09-16", "reason": "Accounting implementation completed before any prospective completed pairs. Original epoch and +2R/1R policy unchanged. Settled exchange fills/funding and causal account taker fees now drive paired replay; fixed quoted, one-sample/half-depth/10bps, and two-sample/quarter-depth/25bps stresses, with date-clustered uncertainty and explicit exclusions. See research/profit_retention/ACCOUNTING.md. No live promotion authorized."}, {"date": "2026-09-30", "reason": "Operator changed the live Killers exit and sizing contract (#106): equal source-target ladder via the legacy planner at KILLERS_RISK_USD=12 / KILLERS_MAX_MARGIN_USD=40, replacing nearest_source at $2. The shadow's comparator ('unchanged actual source exits') therefore changes at the killers-equal-ladder-2026-09-30 effective_at. Pairs whose entry precedes that timestamp stay in the old comparator cohort; pairs straddling it are excluded and listed. Shadow rules and the +2R/1R policy are unchanged. No live promotion authorized."}],
       "bot": "KillersScalpV1",
       "status": "open",
       "registered": "2026-09-16",
@@ -574,6 +574,40 @@
         "No tuning on this cohort. Record all exclusions and amendments. Negative historical development results prohibit claiming robust benefit from the six-trade diagnostic."
       ],
       "triggers": [],
+      "resolution": null
+    },
+    {
+      "id": "killers-equal-ladder-2026-09-30",
+      "bot": "KillersScalpV1",
+      "status": "open",
+      "registered": "2026-09-30",
+      "review_by": "2026-12-31",
+      "min_closed_trades": 30,
+      "effective_at": null,
+      "effective_at_note": "Set by amendment to the killers-receiver recreate time of the release that deploys #106; entries before it belong to the nearest_source epoch.",
+      "context": "2026-09-30 audit (#28 comment): over 13 live trades, 100% at TP1 made +$2.42 against +$15.42 for an equal split across posted targets ($3.49 of it marked, not realized), in one altcoin rally with no statistical power. The one stop (JUP) was identical under every plan.",
+      "contract": {
+        "sizing": "KILLERS_RISK_USD=12 planned loss at the posted stop-limit edge; KILLERS_MAX_MARGIN_USD=40, integer leverage <= 3 (notional cap $120). Bump-to-minimum unchanged.",
+        "exits": "KILLERS_TP_MODE=legacy: 1/N of the filled position at each posted target still ahead of entry, submitted sequentially after fills; a slice under the $10 minimum or a remainder under Freqtrade's reserve rolls forward to the next target. Posted-SL hard stop and channel close/stop instructions unchanged.",
+        "existing_positions": "Positions opened before effective_at keep their frozen policy; nothing is migrated."
+      },
+      "rules": [
+        "Measurement is prospective from effective_at. Do not merge with the nearest_source or earlier epochs, and do not rewrite them.",
+        "Report per closed trade: legs planned vs filled, first leg index (0 expected), realized P&L, R multiple (P&L / planned stop loss), time held, and the counterfactual 100%-at-TP1 result on the same fill.",
+        "Review at 30 closed trades or review_by, whichever comes first: continue, resize, or revert to nearest_source at $2. A few big winners or one bad week is not a verdict; compare expectancy per R with its uncertainty.",
+        "Pause for review, not automatic revert, on: a first leg that is not TP1 on a normally sized entry, blocked/rejected/unknown ladder rows, a stop fill worse than 1.5x planned loss, or the drawdown trigger below."
+      ],
+      "triggers": [
+        {
+          "id": "killers-ladder-maxdd-25",
+          "metric": "max_drawdown_pct",
+          "basis": "since_registered",
+          "op": ">",
+          "threshold": 25.0,
+          "action": "Pause new Killers entries and review with the operator (revert candidate: KILLERS_RISK_USD=2 + nearest_source). Not automatic."
+        }
+      ],
+      "amendments": [],
       "resolution": null
     }
   ]

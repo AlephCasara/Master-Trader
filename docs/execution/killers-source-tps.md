@@ -231,3 +231,20 @@ Migration does not convert older entries into fresh forward pairs. Preserve
 original entry epochs, record the policy transition separately, and do not
 rewrite existing preregistrations or tapes. No monitoring automation was enabled
 by this rollout.
+
+## Equal source ladder at $12 risk — 2026-09-30 (#106)
+
+The operator replaced `nearest_source` with the legacy equal ladder, sized so
+that it actually funds a leg per posted target: `KILLERS_RISK_USD=12`,
+`KILLERS_MAX_MARGIN_USD=40`, and `KILLERS_TP_MODE=legacy` pinned in
+`docker-compose.prod.yml` (no longer read from the VPS `.env`). At $2 risk the
+legacy planner collapsed a position into one exit at the last target; at $10
+the first slice still rolled into TP2 on 5 of 8 sampled signals. At $12 every
+sampled signal starts at TP1, with 7–9 legs
+(`services/killers-receiver/tests/test_production_ladder_config.py`).
+
+Rationale, limits and review rules: preregistration
+`killers-equal-ladder-2026-09-30`. The audit behind it covers 13 trades in one
+rally and is not evidence of edge. Positions opened before activation keep their
+frozen policy. Deploy only after the Hyperliquid deposit is credited: at
+~$28–40 margin per trade, the pre-deposit balance funds about three positions.
