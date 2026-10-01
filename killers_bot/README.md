@@ -90,6 +90,16 @@ systemctl --user stop   killers-observer
 tail -f /home/ubuntu/killers-bot/observer.log
 ```
 
+### Trial channels (capture-only, bd Master-Trader-krl)
+
+`TRIAL_CHANNELS=name:-1001655061968[,name:-100...]` subscribes the same
+session to extra candidate channels. Each gets its own DB
+(`trial-<name>-state.sqlite` next to `KILLERS_DB`) and **nothing else**: no
+classifier, no paper sim, no receiver — the raw capture is the measurement. A
+channel earns a tuned classifier (and later a bot) only after its format and
+hit-rate are read off these DBs. Bad entries are logged and skipped; they
+never affect the killers/insiders feeds.
+
 ## Setup history
 
 1. **Phase 1 (2026-05-24):** Observer-only paper sim. Telethon listener +

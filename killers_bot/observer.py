@@ -76,6 +76,10 @@ class Config:
         # the killers token — a missing insiders token must fail loudly (401,
         # logged, not retried) rather than silently cross-authenticate.
         self.receiver_token = os.getenv("KILLERS_RECEIVER_TOKEN", "")
+        # Trial fan-out (bd Master-Trader-krl): capture-only channels stop
+        # right after persist_raw. Only _trial_configs sets this; the
+        # killers/insiders paths never do.
+        self.capture_only = False
         # Channel-specific classifier prompt + fast-path. Defaults are the
         # Killers VIP settings; the insiders fan-out overrides both (Dennis's
         # "Market Mastery" format is different and the strict-open rule parser
@@ -389,6 +393,12 @@ async def process_message(client, channel_id, conn, config, msg_dict: dict, sour
     persist_raw(conn, msg_dict)
     snippet = (msg_dict.get("text") or "")[:80].replace("\n", " ⏎ ")
     logger.info("[MSG %s] id=%d %r", source.upper(), msg_dict["id"], snippet)
+
+    # Trial channels (bd Master-Trader-krl): the raw row is persisted above;
+    # stop here. No classifier (the format is unknown by design), no gate, no
+    # paper sim, no receiver — measurement precedes any bot.
+    if getattr(config, "capture_only", False):
+        return
 
     chain = await build_reply_chain(client, channel_id, conn, msg_dict)
 
@@ -715,6 +725,44 @@ def _insiders_config() -> "Optional[Config]":
     return ins
 
 
+def _trial_configs() -> "list[tuple[str, Config]]":
+    """Capture-only fan-outs for candidate channels (bd Master-Trader-krl).
+
+    TRIAL_CHANNELS=name:-1001655061968[,name:-100...] subscribes to extra
+    channels on the SAME session/client. Each gets its own DB under the same
+    directory as KILLERS_DB (trial-<name>-state.sqlite) and NEVER a receiver:
+    raw capture only, no classifier, no paper sim — the formats are unknown
+    by design and a channel earns a tuned classifier (and later a bot) only
+    after its capture is measured. Bad entries are logged and skipped: config
+    noise must not take down the feeds that already trade.
+    """
+    raw = os.getenv("TRIAL_CHANNELS", "")
+    if not raw.strip():
+        return []
+    db_dir = os.path.dirname(os.getenv("KILLERS_DB", "/var/lib/killers/state.sqlite"))
+    trials: "list[tuple[str, Config]]" = []
+    for part in raw.split(","):
+        part = part.strip()
+        name, sep, cid = part.partition(":")
+        name, cid = name.strip(), cid.strip()
+        if not sep or not name or not cid.lstrip("-").isdigit():
+            logger.error("[trial] bad TRIAL_CHANNELS entry %r — skipped", part)
+            continue
+        t = Config()                     # re-reads shared api/session env
+        t.channel_id_override = cid
+        t.channel_username = None
+        t.receiver_url = ""              # observe-only: nothing is forwarded
+        t.receiver_token = ""
+        t.db_path = os.path.join(db_dir, f"trial-{name}-state.sqlite")
+        # Killers-format machinery would only misfire on unknown formats.
+        t.use_fast_path = False
+        t.shadow_rules = False
+        t.rules_primary = False
+        t.capture_only = True
+        trials.append((name, t))
+    return trials
+
+
 async def run(config: Config, conn: sqlite3.Connection) -> None:
     from telethon import TelegramClient, events
 
@@ -739,6 +787,17 @@ async def run(config: Config, conn: sqlite3.Connection) -> None:
             await _setup_channel(client, events, ins_conn, ins, "insiders", backfill=False)
     except Exception:
         logger.exception("[insiders] fan-out setup FAILED — killers feed unaffected")
+
+    # Optional TRIAL fan-outs (bd Master-Trader-krl): capture-only channels
+    # measured before any bot exists. Same fault isolation as insiders — a
+    # trial channel that fails to resolve is logged, never fatal.
+    for name, t in _trial_configs():
+        try:
+            t_conn = init_db(t.db_path)
+            # No backfill: the trial measurement starts from NOW.
+            await _setup_channel(client, events, t_conn, t, f"trial:{name}", backfill=False)
+        except Exception:
+            logger.exception("[trial:%s] fan-out setup FAILED — other feeds unaffected", name)
 
     # Heartbeat
     async def heartbeat():
