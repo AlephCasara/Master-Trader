@@ -607,7 +607,12 @@
           "action": "Pause new Killers entries and review with the operator (revert candidate: KILLERS_RISK_USD=2 + nearest_source). Not automatic."
         }
       ],
-      "amendments": [],
+      "amendments": [
+        {
+          "date": "2026-10-01",
+          "reason": "Operator decision (#105): before activation, KILLERS_MAX_OPEN goes from 50 to 5 so open capital at risk stays near 5 x $12. The former risk warden (force-closes measured from the current mark, cap 10% of wallet) would have closed the first $12 trade and the best-running winners. It is replaced by an alerts-only open-risk monitor that measures from entry. Sizing, exit contract and review rules are unchanged."
+        }
+      ],
       "resolution": null
     }
   ]

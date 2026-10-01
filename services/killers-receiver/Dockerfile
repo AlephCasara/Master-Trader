@@ -9,6 +9,8 @@ RUN pip install --no-cache-dir \
     pydantic==2.10.3
 
 COPY app /app/app
+# Open-risk monitor (#105); host cron runs it in this container.
+COPY warden /app/warden
 
 VOLUME ["/var/lib/killers"]
 

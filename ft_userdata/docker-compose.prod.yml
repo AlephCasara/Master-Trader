@@ -196,7 +196,10 @@ services:
       # a margem livre na Hyperliquid). 50 em vez de infinito porque o
       # receiver exige um inteiro; com ~$100 de saldo e $5-10 de margem por
       # posicao, a conta nao sustenta nem 20.
-      KILLERS_MAX_OPEN: "50"
+      # 2026-10-01, operator (#105): 5 again. At $12 per posted stop this
+      # bounds open capital at risk to ~$60; the open-risk monitor
+      # (warden/risk_warden.py, alerts only) checks the book against it.
+      KILLERS_MAX_OPEN: "5"
       # 2026-09-23, operador: nao perder sinal por posicao abaixo do minimo da
       # venue. So as entradas pequenas demais sobem ate o minimo ($11,30); as
       # normais seguem no risco de KILLERS_RISK_USD. KILLERS_MAX_BUMP_RISK_USD
