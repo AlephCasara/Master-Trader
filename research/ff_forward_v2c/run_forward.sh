@@ -11,11 +11,19 @@ REPO=${REPO:-$(git -C "$HERE" rev-parse --show-toplevel)}
 WORK=${WORK:-/home/ubuntu/master-trader/research/ff_forward_v2c_runs}
 SEED=/home/ubuntu/master-trader/research/ff_roi_2026-09-30/user_data/data
 IMAGE=freqtradeorg/freqtrade@sha256:50720a4af314a812be2cfbf5cc6331c63e9332b06f3f4372241f54bc61a35486
+# The image leaves user_data owned by its uid 1000. Open it up after each
+# container step so the host user can overwrite and delete files next run.
+fix_perms() {
+  # Only the container's own files need it; the host's are already writable.
+  docker run --rm --entrypoint sh -v "$WORK/user_data:/freqtrade/user_data" "$IMAGE" \
+    -c 'find /freqtrade/user_data -user "$(id -u)" -exec chmod a+rwX {} +'
+}
 PINNED_COMMIT=f913795
 PINNED_MD5=f4f70fb0a7c434bc96a2bf75382692fa
 
 mkdir -p "$WORK/user_data/strategies" "$WORK/cfg"
 [ -d "$WORK/user_data/data" ] || cp -a "$SEED" "$WORK/user_data/data"
+fix_perms
 
 # Strategy under test: the live file as frozen at registration.
 git -C "$REPO" fetch -q origin main
@@ -38,6 +46,7 @@ nice -n 10 docker run --rm --cpus 2 --memory 10g \
   backtesting --config /cfg/bt.json --strategy-list FFF_V2 FFF_V2_noC \
   --timerange "$START-$END" --timeframe-detail 1m --fee 0.00075 --enable-protections \
   --export trades --notes ff_forward_v2c --cache none
+fix_perms
 
 # Live V2 trades for calibration (read-only).
 docker exec -i ft-funding-fade python3 - > "$WORK/live_trades.json" <<'PY'
