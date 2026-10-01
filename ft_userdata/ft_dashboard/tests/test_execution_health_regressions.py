@@ -145,3 +145,33 @@ def test_request_degradation_changes_green_fleet_to_yellow(monkeypatch, tmp_path
     assert '3 failures' in app._fleet_status()['summary']
     path.unlink()
     assert app._fleet_status()['level'] == 'yellow'
+
+
+def test_offline_snapshot_defaults_a_never_polled_bot_to_dry():
+    bot = {"key": "ghost", "name": "Ghost", "label": "ghost"}
+    snap = app._offline_snapshot(bot, {}, "ConnectError: [Errno -2]")
+    assert snap["reachable"] is False
+    assert snap["dry_run"] is True
+    assert snap["error"] == "ConnectError: [Errno -2]"
+
+
+def test_offline_snapshot_preserves_the_last_observed_mode():
+    bot = {"key": "live-bot", "name": "Live", "label": "live-bot"}
+    snap = app._offline_snapshot(bot, {"dry_run": False, "pnl": {"closed": 3}}, "HTTP 502")
+    assert snap["dry_run"] is False
+    assert snap["pnl"] == {"closed": 3}
+
+
+def test_never_polled_fleet_cannot_report_a_live_bot_unreachable(monkeypatch):
+    # A trimmed deployment polls bots that may not exist (absent registry
+    # entries): with no snapshot ever taken, none may be promoted to live.
+    bot = {"key": "ghost", "name": "Ghost", "label": "ghost"}
+    monkeypatch.setattr(app, 'BOTS', [bot])
+    monkeypatch.setattr(app, '_cache', {
+        'bots': {bot['key']: app._offline_snapshot(bot, {}, 'ConnectError')},
+        'last_reachable_at': {},
+    })
+    status = app._fleet_status()
+    assert status['level'] == 'yellow'
+    assert status['stale_bots'] == ['ghost']
+    assert 'live bot unreachable' not in status['summary']

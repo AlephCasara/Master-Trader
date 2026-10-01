@@ -55,7 +55,7 @@ KILLERS_ROUND5_EPOCH_TS_MS = 1787854748304  # 2026-08-27T18:19:08.304Z
 INSIDERS_ROUND5_EPOCH_TS_MS = 1787854752005  # 2026-08-27T18:19:12.005Z
 OI_ROUND4_EPOCH_TS_MS = 1787619881124  # 2026-08-25T01:04:41.124Z
 
-BOTS: list[dict[str, Any]] = [
+FLEET_REGISTRY: list[dict[str, Any]] = [
     {
         "key": "fundingfade",
         "name": "FundingFadeV1",
@@ -245,6 +245,32 @@ LINEAGE_DB_DIR = Path(os.environ.get("LINEAGE_DB_DIR", "/var/lib/freqtrade-histo
 # Live killers-receiver SQLite (target_orders / positions) — separate DB from
 # the observer state.sqlite above. Empty => TP-ladder pill disabled (bar-only).
 KILLERS_RECEIVER_DB = os.environ.get("KILLERS_RECEIVER_DB", "")
+
+
+def _deployment_fleet(registry: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Scope this deployment to an explicit subset of the bot registry.
+
+    FLEET_BOTS is a comma-separated list of registry keys for trimmed
+    deployments (personal dry-run instance, Zeabur). Unset or blank keeps the
+    full registry, which is the production behavior. Unknown keys fail loudly
+    at startup: a typo must not silently drop a bot from monitoring. Order
+    follows FLEET_BOTS so a scoped dashboard lists bots in the order the
+    deployment declares them."""
+    wanted = os.environ.get("FLEET_BOTS", "")
+    keys = [k.strip() for k in wanted.split(",") if k.strip()]
+    if not keys:
+        return registry
+    by_key = {b["key"]: b for b in registry}
+    unknown = [k for k in keys if k not in by_key]
+    if unknown:
+        raise ValueError(
+            f"FLEET_BOTS unknown bot key(s): {', '.join(unknown)}; "
+            f"known: {', '.join(by_key)}"
+        )
+    return [by_key[k] for k in keys]
+
+
+BOTS = _deployment_fleet(FLEET_REGISTRY)
 
 # Phase 5 / Gate constants
 GATE1_TRADES, GATE1_DAYS, GATE1_PAIRS = 30, 14, 5
@@ -1540,38 +1566,19 @@ async def _poll_loop():
             async with httpx.AsyncClient() as client:
                 results = await asyncio.gather(*[_poll_bot(client, b) for b in BOTS], return_exceptions=True)
                 for bot, r in zip(BOTS, results):
+                    previous = _cache["bots"].get(bot["key"], {})
                     if isinstance(r, Exception):
-                        # Overwrite the cached snapshot so callers don't see
-                        # last successful run as still 'reachable'. Preserve
-                        # the last measurements and deployment metadata so the
-                        # UI can keep the bot visible while clearly marking it
-                        # offline instead of silently removing its tab/row.
-                        msg = str(r)
-                        previous = _cache["bots"].get(bot["key"], {})
-                        _cache["errors"][bot["key"]] = msg
-                        _cache["bots"][bot["key"]] = {
-                            **previous,
-                            "key": bot["key"], "name": bot["name"], "label": bot["label"],
-                            "dry_run": previous.get("dry_run", False),
-                            "account_group": bot.get("account_group", bot["key"]),
-                            "strategy_kind": bot.get("strategy_kind", "autonomous-quant"),
-                            "venue": bot.get("venue", "binance"),
-                            "reachable": False, "error": msg,
-                        }
+                        _cache["errors"][bot["key"]] = str(r)
+                        _cache["bots"][bot["key"]] = _offline_snapshot(bot, previous, str(r))
                     else:
                         if r.get("reachable"):
                             _cache["bots"][bot["key"]] = r
+                            _cache["errors"].pop(bot["key"], None)
+                            _cache["last_reachable_at"][bot["key"]] = time.time()
                         else:
-                            previous = _cache["bots"].get(bot["key"], {})
-                            _cache["bots"][bot["key"]] = {
-                                **previous,
-                                "key": bot["key"], "name": bot["name"], "label": bot["label"],
-                                "dry_run": previous.get("dry_run", False),
-                                "account_group": bot.get("account_group", bot["key"]),
-                                "strategy_kind": bot.get("strategy_kind", "autonomous-quant"),
-                                "venue": bot.get("venue", "binance"),
-                                "reachable": False, "error": r.get("error", "unreachable"),
-                            }
+                            error = r.get("error", "unreachable")
+                            _cache["errors"][bot["key"]] = error
+                            _cache["bots"][bot["key"]] = _offline_snapshot(bot, previous, error)
                         if r.get("reachable"):
                             _cache["errors"].pop(bot["key"], None)
                             _cache["last_reachable_at"][bot["key"]] = time.time()
@@ -1604,6 +1611,25 @@ def _account_health() -> dict | None:
         return state
     except (OSError, ValueError, KeyError, TypeError):
         return {"complete": False, "accounts": {}, "warnings": ["Account and request telemetry unavailable or stale"]}
+
+
+def _offline_snapshot(bot: dict, previous: dict, error: str) -> dict:
+    """Tombstone for an unreachable bot: overwrite the cached snapshot so
+    callers don't see the last successful run as still 'reachable', while
+    preserving the last measurements and deployment metadata so the UI keeps
+    the bot visible and clearly marked offline instead of silently removing
+    its tab/row. dry_run carries the last observed mode; with no observation
+    it defaults to dry (True) so a never-polled bot is never promoted to a
+    live bot gone unreachable (missing telemetry is not fabricated)."""
+    return {
+        **previous,
+        "key": bot["key"], "name": bot["name"], "label": bot["label"],
+        "dry_run": previous.get("dry_run", True),
+        "account_group": bot.get("account_group", bot["key"]),
+        "strategy_kind": bot.get("strategy_kind", "autonomous-quant"),
+        "venue": bot.get("venue", "binance"),
+        "reachable": False, "error": error,
+    }
 
 
 def _fleet_status() -> dict:

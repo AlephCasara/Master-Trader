@@ -276,7 +276,7 @@ def test_gate2_uses_epoch_metrics_only():
 
 
 def test_every_bot_declares_epoch_version_and_gate_contract():
-    for bot in app.BOTS:
+    for bot in app.FLEET_REGISTRY:
         assert bot["epoch_start_ts_ms"] > 0
         assert bot["epoch_label"]
         assert bot["strategy_version"]
