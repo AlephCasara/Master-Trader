@@ -53,7 +53,10 @@ function dash() {
     _tradeScale: {},
     expandedTrade: null,
     themePreference: window.masterTheme?.preference() || 'system',
-    setTheme(value) { window.masterTheme?.set(value); this.themePreference = value; },
+    cycleTheme() {
+      const next = {light: 'dark', dark: 'system', system: 'light'}[this.themePreference] || 'light';
+      window.masterTheme?.set(next); this.themePreference = next;
+    },
     closeTrade: null, closeBusy: false, closeMessage: '', closeUser: '', closePassword: '', closeRequestId: null,
     showClose(trade) {
       this.closeTrade = {...trade}; this.closeMessage = ''; this.closePassword = '';

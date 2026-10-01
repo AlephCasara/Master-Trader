@@ -195,9 +195,10 @@ pill shapes.
   Scale selection exposes `aria-pressed`, expansion exposes `aria-expanded`
   and chart loading exposes `aria-busy`. Reduced-motion preferences disable
   transitions and smooth scrolling.
-- **Theme:** the top bar has a text-labelled Light / Dark / System group that
-  reuses the scale toggle styling and exposes `aria-pressed`. System is the
-  default and follows `prefers-color-scheme` live; the choice persists in
+- **Theme:** a 32px icon button in the top bar cycles Light (sun), Dark (moon)
+  and System (half-filled circle). The icon shows the current choice, and the
+  accessible name and tooltip state it in text. System is the default and
+  follows `prefers-color-scheme` live; the choice persists in
   `localStorage`. An inline head script sets `data-theme` before first paint,
   `color-scheme` follows it so native controls and the close dialog match, and
   a `themechange` event recolors charts without changing their viewport or

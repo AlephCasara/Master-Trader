@@ -126,6 +126,9 @@ body { background:var(--bg-0); font-size:14px; }
 .scale-toggle { display:flex; gap:2px; background:var(--surface-2); border-radius:6px; padding:4px; }
 .scale-toggle button,.expand-chart { background:transparent; border:0; padding:8px 12px; font:inherit; font-size:12px; cursor:pointer; color:var(--text-2); border-radius:4px; min-height:36px; }
 .scale-toggle button[aria-pressed=true] { background:var(--pressed-bg); color:var(--pressed-text); } .expand-chart { color:var(--accent); }
+.theme-toggle { display:inline-flex; align-items:center; justify-content:center; width:32px; height:32px; padding:0; border:0; border-radius:6px; background:transparent; color:var(--text-2); cursor:pointer; }
+.theme-toggle:hover { background:var(--surface-2); color:var(--text); } .theme-toggle svg { width:16px; height:16px; }
+@media(max-width:600px) { .topbar > .theme-toggle { order:4; } }
 .exit-levels { display:flex; flex-wrap:wrap; gap:8px; font-size:12px; line-height:1.5; }
 .exit-levels>span { padding:6px 8px; background:var(--surface-2); border-radius:4px; color:var(--text-2); font-variant-numeric:tabular-nums; }
 .exit-levels .exit-active { color:var(--exit-active-text); background:var(--exit-active-bg); } .exit-levels .exit-stop,.exit-levels .exit-unknown,.exit-levels .exit-blocked,.exit-levels .exit-rejected { color:var(--exit-stop-text); background:var(--exit-stop-bg); } .exit-levels .exit-pending { color:var(--exit-pending-text); background:var(--exit-pending-bg); }
