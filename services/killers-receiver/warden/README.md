@@ -2,7 +2,12 @@
 
 `risk_warden.py` checks the open Killers book against the sizing contract and
 alerts on changes. It has **no write path** to Freqtrade. Entry admission is
-enforced by the receiver (`KILLERS_MAX_OPEN`). Behaviour and env: see the
+enforced by the receiver (`KILLERS_MAX_OPEN`).
+
+`KILLERS_MAX_OPEN` counts every receiver position in `open`/`requested`,
+including accepted limit entries still resting in the zone (up to the 24h
+entry timeout). Five resting orders therefore block new signals until one
+fills or expires — a resting entry can still fill, so it is reserved risk. Behaviour and env: see the
 module docstring. History: #105 (it used to force-close positions measured
 from the current mark, against a stale Binance-era DB copy).
 

@@ -16,21 +16,23 @@ Each pass:
   2. Read each trade's posted stop (`sl_abs`) from the receiver DB
      (KILLERS_DB, opened read-only), matched by ft_trade_id AND pair. A row
      whose pair disagrees is reported, never priced off.
-  3. Capital at risk per trade = loss from ENTRY to the posted stop on the
-     remaining amount (long: max(0, open_rate - sl) * amount; short mirrored).
-     Measured from entry, not the current mark: open profit on a running
-     winner is not risk to cut, the exit ladder is meant to let it run.
+  3. Capital at risk per trade = loss from ENTRY to the stop's adverse fill
+     edge on the remaining amount, the same distance the receiver sizes on
+     (long: max(0, open_rate - sl * KILLERS_STOP_LIMIT_RATIO) * amount; short
+     mirrored with 2 - ratio). Measured from entry, not the current mark: open
+     profit on a running winner is not risk to cut, the ladder lets it run.
   4. Findings: total risk over the cap (default KILLERS_MAX_OPEN x
      KILLERS_RISK_USD x 1.25); a single trade over 1.5 x KILLERS_RISK_USD;
      an open trade with no matched posted stop; Freqtrade or DB unreadable.
   5. Logs one line per pass. Sends a Telegram alert through KILLERS_NOTIFY_URL
-     only when the set of findings changes (state file beside the DB), so a
-     standing condition alerts once and again when it clears.
+     when the set of findings changes (state file beside the DB), so a
+     standing condition alerts once and again when it clears. The state is
+     saved only after a delivered alert, so a failed one retries next pass.
 
 Env (all already set on the receiver container):
   KILLERS_FT_BASE_URL, KILLERS_FT_USERNAME, KILLERS_FT_PASSWORD
   KILLERS_DB                 receiver SQLite path
-  KILLERS_RISK_USD, KILLERS_MAX_OPEN
+  KILLERS_RISK_USD, KILLERS_MAX_OPEN, KILLERS_STOP_LIMIT_RATIO
   KILLERS_NOTIFY_URL, TRADE_WEBHOOK_NOTIFY_TOKEN (optional)
   WARDEN_RISK_CAP_USD        optional override of the total cap
   WARDEN_STATE               optional state path (default <db dir>/warden_state.json)
@@ -60,6 +62,7 @@ class WardenConfig:
         self.db_path = env("KILLERS_DB", "/var/lib/killers/receiver-hyperliquid.sqlite")
         self.risk_usd = float(env("KILLERS_RISK_USD", "2"))
         self.max_open = int(env("KILLERS_MAX_OPEN", "10"))
+        self.stop_limit_ratio = float(env("KILLERS_STOP_LIMIT_RATIO", "1.0"))
         override = env("WARDEN_RISK_CAP_USD", "").strip()
         self.cap_usd = (float(override) if override
                         else self.max_open * self.risk_usd * TOTAL_SLACK)
@@ -92,10 +95,11 @@ def get_open_trades(cfg: WardenConfig) -> Optional[list[dict]]:
     return None
 
 
-def notify(cfg: WardenConfig, text: str) -> None:
-    """Best-effort Telegram alert via trade-webhook; never raises."""
+def notify(cfg: WardenConfig, text: str) -> bool:
+    """Telegram alert via trade-webhook; True only when delivered. Never raises."""
     if not cfg.notify_url:
-        return
+        _log("WARNING KILLERS_NOTIFY_URL unset; alert not sent")
+        return False
     headers = {"Content-Type": "application/json"}
     if cfg.notify_token:
         headers["X-Notify-Token"] = cfg.notify_token
@@ -104,8 +108,10 @@ def notify(cfg: WardenConfig, text: str) -> None:
     try:
         with urllib.request.urlopen(req, timeout=5) as r:
             r.read()
+            return 200 <= r.status < 300
     except (urllib.error.URLError, OSError) as e:
         _log(f"WARNING notify failed: {e}")
+        return False
 
 
 def load_sl_abs(conn: sqlite3.Connection, ft_trade_id, pair: str) -> tuple[Optional[float], str]:
@@ -126,8 +132,12 @@ def load_sl_abs(conn: sqlite3.Connection, ft_trade_id, pair: str) -> tuple[Optio
     return (sl, "matched") if sl > 0 else (None, "no_sl")
 
 
-def risk_from_entry(trade: dict, sl_abs: float) -> float:
-    """Loss from entry to the posted stop on the remaining amount, floored at 0."""
+def risk_from_entry(trade: dict, sl_abs: float, stop_limit_ratio: float = 1.0) -> float:
+    """Loss from entry to the stop's adverse fill edge on the remaining amount.
+
+    Freqtrade places the stop-limit below a long trigger (above a short one),
+    which is the distance the receiver sizes on. Floored at 0.
+    """
     try:
         amount = float(trade.get("amount") or 0.0)
         entry = float(trade.get("open_rate") or 0.0)
@@ -135,7 +145,10 @@ def risk_from_entry(trade: dict, sl_abs: float) -> float:
         return 0.0
     if amount <= 0 or entry <= 0:
         return 0.0
-    move = sl_abs - entry if trade.get("is_short") else entry - sl_abs
+    if trade.get("is_short"):
+        move = sl_abs * (2 - stop_limit_ratio) - entry
+    else:
+        move = entry - sl_abs * stop_limit_ratio
     return max(0.0, move) * amount
 
 
@@ -148,7 +161,7 @@ def assess(cfg: WardenConfig, conn: sqlite3.Connection, trades: list[dict]) -> d
         if reason != "matched":
             findings.append(f"unmatched:{tid}:{pair}:{reason}")
             continue
-        risk = risk_from_entry(t, sl_abs)
+        risk = risk_from_entry(t, sl_abs, cfg.stop_limit_ratio)
         per_trade.append({"trade_id": tid, "pair": pair, "risk": risk})
         total += risk
         if risk > cfg.trade_cap_usd:
@@ -203,13 +216,15 @@ def run_once(cfg: WardenConfig, conn: Optional[sqlite3.Connection] = None) -> di
     findings = summary["findings"]
     _log(("ALERT " + " ".join(findings) + " | " if findings else "OK ") + _describe(summary))
     previous = _load_state(cfg.state_path)
+    summary["alerted"] = False
     if findings != previous:
         if findings:
-            notify(cfg, "[killers-warden] " + ", ".join(findings) + " | " + _describe(summary))
-        elif previous:
-            notify(cfg, "[killers-warden] resolved | " + _describe(summary))
-        _save_state(cfg.state_path, findings)
-    summary["alerted"] = findings != previous
+            text = "[killers-warden] " + ", ".join(findings) + " | " + _describe(summary)
+        else:
+            text = "[killers-warden] resolved | " + _describe(summary)
+        summary["alerted"] = notify(cfg, text)
+        if summary["alerted"]:
+            _save_state(cfg.state_path, findings)
     return summary
 
 

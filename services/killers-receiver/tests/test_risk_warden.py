@@ -23,9 +23,10 @@ def _conn(rows):
     return conn
 
 
-def _cfg(tmp_path, monkeypatch, risk="12", max_open="5"):
+def _cfg(tmp_path, monkeypatch, risk="12", max_open="5", ratio="1.0"):
     monkeypatch.setenv("KILLERS_RISK_USD", risk)
     monkeypatch.setenv("KILLERS_MAX_OPEN", max_open)
+    monkeypatch.setenv("KILLERS_STOP_LIMIT_RATIO", ratio)
     monkeypatch.setenv("WARDEN_STATE", str(tmp_path / "state.json"))
     monkeypatch.delenv("WARDEN_RISK_CAP_USD", raising=False)
     return risk_warden.WardenConfig()
@@ -36,10 +37,15 @@ def _trade(tid, pair, amount, open_rate, current_rate=None, is_short=False):
             "current_rate": current_rate or open_rate, "is_short": is_short}
 
 
-def _run(cfg, conn, trades):
+def _run(cfg, conn, trades, delivered=True):
     sent = []
+
+    def fake_notify(c, text):
+        sent.append(text)
+        return delivered
+
     with patch.object(risk_warden, "get_open_trades", return_value=trades), \
-         patch.object(risk_warden, "notify", side_effect=lambda c, text: sent.append(text)):
+         patch.object(risk_warden, "notify", side_effect=fake_notify):
         summary = risk_warden.run_once(cfg, conn)
     return summary, sent
 
@@ -65,6 +71,24 @@ def test_risk_is_measured_from_entry_not_the_mark():
     assert risk_warden.risk_from_entry(short, 120.0) == 40.0
     # Stop moved past entry: no capital at risk.
     assert risk_warden.risk_from_entry(_trade(3, "Y/USDC:USDC", 10, 100), 101.0) == 0.0
+
+
+def test_risk_uses_the_stop_limit_fill_edge_like_the_sizing():
+    # Entry 100, SL 90, ratio 0.98: the long stop-limit fills down to 88.2.
+    long_ = _trade(1, "L/USDC:USDC", 1, 100)
+    assert abs(risk_warden.risk_from_entry(long_, 90.0, 0.98) - 11.8) < 1e-9
+    short = _trade(2, "S/USDC:USDC", 1, 100, is_short=True)
+    assert abs(risk_warden.risk_from_entry(short, 110.0, 0.98) - 12.2) < 1e-9
+
+
+def test_failed_alert_is_retried_next_pass(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path, monkeypatch)
+    _, sent = _run(cfg, _conn([]), None, delivered=False)
+    assert len(sent) == 1
+    _, sent = _run(cfg, _conn([]), None, delivered=True)
+    assert len(sent) == 1  # not acknowledged until delivered
+    _, sent = _run(cfg, _conn([]), None, delivered=True)
+    assert sent == []
 
 
 def test_within_contract_is_ok_and_silent(tmp_path, monkeypatch):
