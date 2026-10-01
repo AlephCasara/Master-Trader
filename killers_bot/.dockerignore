@@ -1,0 +1,11 @@
+# The build context sits inside a working deployment: secrets and runtime
+# state must never ride into a (public) image (bd dp1.5).
+.env
+.env.*
+*.session
+*.session-journal
+backtest/
+tests/
+__pycache__/
+.pytest_cache/
+.venv/
