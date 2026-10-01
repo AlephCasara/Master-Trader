@@ -5,7 +5,7 @@
 #
 # Build from ft_userdata/ (the parent of this directory):
 #   docker build -f zeabur/Dockerfile.fleet -t mt-freqtrade:20261001 .
-FROM freqtradeorg/freqtrade@sha256:50720a4af314a812be2cf5cc6331c63e9332b06f3f4372241f54bc61a35486
+FROM freqtradeorg/freqtrade@sha256:50720a4af314a812be2cfbf5cc6331c63e9332b06f3f4372241f54bc61a35486
 
 # Baked at /opt/mt (NOT /freqtrade/user_data — the Zeabur volume mounts there
 # and would shadow them). api_server credentials are blanked at build time:
