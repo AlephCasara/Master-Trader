@@ -1,5 +1,5 @@
 const {chromium,webkit}=require('playwright');
-const fs=require('fs');const root=require('path').join(__dirname,'../../');const assert=require('node:assert/strict');
+const fs=require('fs');const luminance=([r,g,b])=>{const [x,y,z]=[r,g,b].map(v=>v/255).map(v=>v<=0.03928?v/12.92:((v+0.055)/1.055)**2.4);return 0.2126*x+0.7152*y+0.0722*z;};const contrast=(a,b)=>{const [x,y]=[luminance(a),luminance(b)].sort((p,q)=>q-p);return (x+0.05)/(y+0.05);};const root=require('path').join(__dirname,'../../');const assert=require('node:assert/strict');
 (async()=>{
  const browser=await (process.env.BROWSER_ENGINE==='webkit'?webkit:chromium).launch(process.env.CHROME_CHANNEL&&process.env.BROWSER_ENGINE!=='webkit'?{channel:process.env.CHROME_CHANNEL}:{});const page=await browser.newPage({viewport:{width:1440,height:1000}});await page.addInitScript(()=>Object.defineProperty(navigator,'language',{get:()=> 'en-US@posix'}));const errors=[];page.on('pageerror',e=>errors.push(e.message));
  const fixture=require('./fixture.cjs')(); let closeRequests=0;
@@ -40,6 +40,7 @@ const fs=require('fs');const root=require('path').join(__dirname,'../../');const
  await page.getByRole('button',{name:'Light',exact:true}).click();await page.waitForTimeout(200);assert.equal(await page.locator('#chart-portfolio-equity svg line').first().getAttribute('stroke'),(await theme()).gridToken,'Analytics must redraw on theme change');assert.notEqual((await theme()).gridToken,themed.gridToken);
  await page.getByRole('button',{name:'Dark',exact:true}).click();await page.waitForTimeout(200);
  await page.reload();await page.waitForTimeout(1800);themed=await theme();assert.equal(themed.theme,'dark','Theme preference must persist across reload');assert.deepEqual(themed.pressed,['false','true','false']);
+ await page.evaluate(()=>Alpine.$data(document.body).openPositionsTab());await page.waitForTimeout(1000);const logoFill=(await page.locator('.trade-chart #tv-attr-logo path[fill="var(--fill)"]').first().evaluate(el=>getComputedStyle(el).fill)).match(/\d+/g).slice(0,3).map(Number);const logoRatio=contrast(logoFill,rgb(themed.chartToken));assert(logoRatio>=3,`TradingView logo created in dark must stay legible: ${logoRatio}`);console.log('Dark logo contrast at creation',logoRatio);
  await page.getByRole('button',{name:'System',exact:true}).click();await page.waitForTimeout(200);assert.equal((await theme()).theme,'light');
  await page.emulateMedia({colorScheme:'dark'});await page.waitForTimeout(200);assert.equal((await theme()).theme,'dark','System must follow prefers-color-scheme');
  await page.emulateMedia({colorScheme:'light'});await page.waitForTimeout(200);assert.equal((await theme()).theme,'light');
