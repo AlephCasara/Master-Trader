@@ -1,0 +1,20 @@
+# Dashboard image for the Zeabur deployment (bd dp1.5). Built from
+# ft_userdata/ (the parent of this directory) so the overlays can be baked
+# in — on Zeabur there is no bind mount for them:
+#   docker build -f zeabur/Dockerfile.dashboard -t mt-dashboard:20261001 .
+# Lineage history is intentionally NOT baked (runtime data stays private);
+# the lineage panels degrade gracefully when LINEAGE_DB_DIR has no DBs.
+FROM python:3.12-slim
+WORKDIR /app
+COPY ft_dashboard/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY ft_dashboard/app.py ft_dashboard/trade_controls.py /app/
+COPY ft_dashboard/events.yml /app/events.yml
+COPY ft_dashboard/static /app/static
+COPY ft_dashboard/templates /app/templates
+COPY overlays /overlays
+ENV OVERLAYS_DIR=/overlays
+EXPOSE 8000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3).read()" || exit 1
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]

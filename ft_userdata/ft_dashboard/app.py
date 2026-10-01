@@ -270,7 +270,31 @@ def _deployment_fleet(registry: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [by_key[k] for k in keys]
 
 
-BOTS = _deployment_fleet(FLEET_REGISTRY)
+# bd dp1.5 (Zeabur): inside a Zeabur project, internal DNS is
+# <name>.zeabur.internal. FLEET_DNS_SUFFIX appends to every registry host so
+# the same image serves the compose deployment (suffix empty, container-name
+# DNS) and Zeabur (.zeabur.internal). Credentials stay keyed by the registry
+# host — _api_auth strips the suffix before the SERVICE_API_SLUGS lookup.
+FLEET_DNS_SUFFIX = os.getenv("FLEET_DNS_SUFFIX", "")
+
+
+def _apply_fleet_dns_suffix(bot: dict[str, Any]) -> dict[str, Any]:
+    if not FLEET_DNS_SUFFIX:
+        return bot
+    for key in ("url", "receiver_url"):
+        raw = bot.get(key)
+        if not raw:
+            continue
+        parsed = urlparse(raw)
+        if parsed.hostname is None or parsed.port is None:
+            continue
+        bot[key] = parsed._replace(
+            netloc=f"{parsed.hostname}{FLEET_DNS_SUFFIX}:{parsed.port}"
+        ).geturl()
+    return bot
+
+
+BOTS = [_apply_fleet_dns_suffix(b) for b in _deployment_fleet(FLEET_REGISTRY)]
 
 # Phase 5 / Gate constants
 GATE1_TRADES, GATE1_DAYS, GATE1_PAIRS = 30, 14, 5
@@ -523,7 +547,7 @@ SERVICE_API_SLUGS = {
 
 def _api_auth(url: str) -> tuple[str, str]:
     """Credentials for one bot: its own if issued, else the fleet pair."""
-    host = urlparse(url).hostname or ""
+    host = (urlparse(url).hostname or "").removesuffix(FLEET_DNS_SUFFIX)
     slug = SERVICE_API_SLUGS.get(host)
     if slug:
         user = os.environ.get(f"FT_API_USER_{slug}")

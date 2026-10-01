@@ -1,0 +1,31 @@
+# Fleet image for the Zeabur deployment (bd dp1.5): the pinned freqtrade
+# digest the local stack runs, with configs/strategies baked in so no bind
+# mounts exist on Zeabur (per-service volumes only). One image serves all six
+# bots; each service picks its entrypoint script via source.command.
+#
+# Build from ft_userdata/ (the parent of this directory):
+#   docker build -f zeabur/Dockerfile.fleet -t mt-freqtrade:20261001 .
+FROM freqtradeorg/freqtrade@sha256:50720a4af314a812be2cf5cc6331c63e9332b06f3f4372241f54bc61a35486
+
+# Baked at /opt/mt (NOT /freqtrade/user_data — the Zeabur volume mounts there
+# and would shadow them). api_server credentials are blanked at build time:
+# live values arrive via FREQTRADE__ env at runtime, and this image is public.
+COPY user_data/configs /opt/mt/configs
+COPY user_data/strategies /opt/mt/strategies
+RUN python - <<'EOF'
+import json, pathlib
+for cfg in pathlib.Path("/opt/mt/configs").glob("*.json"):
+    data = json.loads(cfg.read_text())
+    api = data.get("api_server")
+    if isinstance(api, dict):
+        for key in ("username", "password", "jwt_secret_key", "ws_token"):
+            if api.get(key):
+                api[key] = ""
+        cfg.write_text(json.dumps(data, indent=2))
+EOF
+
+# Resolves USER_DATA = script_dir/user_data -> /freqtrade/user_data (the
+# fade bot's volume), reproducing the local funding-refresh paths exactly.
+COPY download_funding_rates.py /freqtrade/download_funding_rates.py
+COPY zeabur/mt-run-*.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/mt-run-*.sh
