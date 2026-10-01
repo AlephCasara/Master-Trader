@@ -17,6 +17,10 @@ COPY zeabur/strip-api-creds.py /tmp/strip-api-creds.py
 USER root
 RUN python3 /tmp/strip-api-creds.py && rm /tmp/strip-api-creds.py
 USER ftuser
+# Docker derives HOME from the passwd entry at runtime; Kubernetes does not.
+# Without this, python can't see /home/ftuser/.local user-site packages and
+# the freqtrade console script dies with ModuleNotFoundError.
+ENV HOME=/home/ftuser
 
 # Resolves USER_DATA = script_dir/user_data -> /freqtrade/user_data (the
 # fade bot's volume), reproducing the local funding-refresh paths exactly.
