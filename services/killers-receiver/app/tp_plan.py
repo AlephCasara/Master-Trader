@@ -47,7 +47,8 @@ def _partial_exit_reserve(trade, amount_reserve_percent):
     return min(cap, max(Decimal(1), reserve))
 
 
-def executable_targets(trade, targets, min_notional, amount_reserve_percent=0.05):
+def executable_targets(trade, targets, min_notional, amount_reserve_percent=0.05,
+                       planned_stop=None):
     """Return (original target index, rounded price, base amount) groups.
 
     Metadata comes from the executor's trade snapshot, not inferred from
@@ -73,7 +74,19 @@ def executable_targets(trade, targets, min_notional, amount_reserve_percent=0.05
     total = (_positive(trade.get("amount")) / quantum).to_integral_value(
         rounding=ROUND_FLOOR) * quantum
     minimum = _positive(min_notional)
-    residual_minimum = minimum * _partial_exit_reserve(trade, amount_reserve_percent)
+    reserve = _partial_exit_reserve(trade, amount_reserve_percent)
+    if planned_stop is not None:
+        # Groups are submitted later, one per fill, and Freqtrade checks each
+        # against the stop ratio at that moment. At arming the snapshot can
+        # still carry the strategy's initial -0.07 before the posted stop
+        # widens it, so also honour the ratio the posted stop will produce
+        # (#106 review).
+        open_rate = _positive(trade.get("open_rate"))
+        leverage = _positive(trade.get("leverage") or 1)
+        planned_ratio = abs(open_rate - _positive(planned_stop)) / open_rate * leverage
+        reserve = max(reserve, _partial_exit_reserve(
+            {"stop_loss_ratio": planned_ratio}, amount_reserve_percent))
+    residual_minimum = minimum * reserve
     rounding = ROUND_FLOOR if short else ROUND_CEILING
     prices = [(_positive(p) / price_step).to_integral_value(rounding=rounding)
               * price_step for p in targets]

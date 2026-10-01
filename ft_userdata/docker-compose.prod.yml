@@ -174,9 +174,17 @@ services:
       # capped admissible stop distance at 8.8% while the channel posts
       # 11.8-13% stops - 3 of the first 4 live signals were structurally
       # ineligible. $2 admits stops up to 17.7% (~2% of bot equity per trade).
-      KILLERS_RISK_USD: "2"
+      # $12 risk / $40 margin (2026-09-30, operator, #106): an equal ladder
+      # over the channel's 8-9 posted targets needs ~$80-90 notional per trade
+      # ($10 per leg at its price, plus Freqtrade's remaining-amount reserve).
+      # At the channel's 10-14.5% stop distance (0.98 stop-limit edge
+      # included) $12 plans ~$83-96 notional; $40 x 3x caps it at $120. At
+      # $10 the first slice fell under the minimum on 5 of 8 sampled signals
+      # and rolled into TP2. One stop ~= 4% of the equity the 10% portfolio
+      # circuit breaker watches.
+      KILLERS_RISK_USD: "12"
       KILLERS_MIN_MARGIN_USD: "5"
-      KILLERS_MAX_MARGIN_USD: "10"
+      KILLERS_MAX_MARGIN_USD: "40"
       KILLERS_MAX_LEVERAGE: "3"
       # Must match the Freqtrade stop-limit execution band in
       # user_data/configs/KillersScalpV1.json. Risk sizing uses the adverse
@@ -206,9 +214,16 @@ services:
       # and removes liquidations. This bounded live evolution explicitly
       # supersedes the historical dry-only verdict; set "false" to revert.
       KILLERS_POSTED_SL: "true"
-      # Empty preserves existing policy until a reviewed prospective activation.
-      KILLERS_TP_ALLOCATIONS: ${KILLERS_TP_ALLOCATIONS:-}
-      KILLERS_TP_MODE: ${KILLERS_TP_MODE:-legacy}
+      # Pinned empty with the equal ladder below: a non-empty value would make
+      # new positions use frozen explicit allocations instead (#106).
+      KILLERS_TP_ALLOCATIONS: ""
+      # Equal source ladder (2026-09-30, operator, #106). Pinned here, not read
+      # from .env, so the running policy is the reviewed one. At the $12-risk
+      # size the legacy planner sells 1/N at each posted target still ahead of
+      # entry; a slice under the $10 venue minimum rolls forward into the next
+      # target. Replaces nearest_source (100% at TP1 at the old $2 size).
+      # Positions opened earlier keep their frozen policy; nothing migrates.
+      KILLERS_TP_MODE: legacy
       KILLERS_EXECUTION_VENUE: hyperliquid
     volumes:
       - killers_receiver_state:/var/lib/killers

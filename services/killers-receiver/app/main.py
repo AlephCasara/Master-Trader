@@ -1188,14 +1188,15 @@ async def _place_target_limits_inner(
         if trade_snapshot is None:
             return []  # delayed-fill reconciliation will retry the read
         try:
-            position = conn.execute("SELECT tp_policy FROM positions WHERE pos_id=?", (pos_id,)).fetchone()
+            position = conn.execute("SELECT tp_policy, sl_abs FROM positions WHERE pos_id=?", (pos_id,)).fetchone()
             frozen_policy = json.loads(position["tp_policy"]) if position and position["tp_policy"] else None
             if frozen_policy:
                 plan = (nearby_allocations(trade_snapshot, frozen_policy)
                         if frozen_policy.get("mode") == "nearest_source"
                         else executable_source_targets(trade_snapshot, frozen_policy))
             else:
-                plan = executable_targets(trade_snapshot, targets, min_notional=10)
+                plan = executable_targets(trade_snapshot, targets, min_notional=10,
+                                          planned_stop=position["sl_abs"] if position else None)
         except (ValueError, ArithmeticError, TypeError) as exc:
             planning_error = str(exc)
             if frozen_policy:
