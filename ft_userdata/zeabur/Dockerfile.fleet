@@ -12,17 +12,11 @@ FROM freqtradeorg/freqtrade@sha256:50720a4af314a812be2cfbf5cc6331c63e9332b06f3f4
 # live values arrive via FREQTRADE__ env at runtime, and this image is public.
 COPY user_data/configs /opt/mt/configs
 COPY user_data/strategies /opt/mt/strategies
-RUN python - <<'EOF'
-import json, pathlib
-for cfg in pathlib.Path("/opt/mt/configs").glob("*.json"):
-    data = json.loads(cfg.read_text())
-    api = data.get("api_server")
-    if isinstance(api, dict):
-        for key in ("username", "password", "jwt_secret_key", "ws_token"):
-            if api.get(key):
-                api[key] = ""
-        cfg.write_text(json.dumps(data, indent=2))
-EOF
+COPY zeabur/strip-api-creds.py /tmp/strip-api-creds.py
+# The base image switches to ftuser; rewriting the root-owned COPY needs root.
+USER root
+RUN python3 /tmp/strip-api-creds.py && rm /tmp/strip-api-creds.py
+USER ftuser
 
 # Resolves USER_DATA = script_dir/user_data -> /freqtrade/user_data (the
 # fade bot's volume), reproducing the local funding-refresh paths exactly.
