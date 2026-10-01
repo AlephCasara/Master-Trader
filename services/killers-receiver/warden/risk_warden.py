@@ -1,40 +1,39 @@
 #!/usr/bin/env python3
-"""Portfolio stop-at-risk warden for the Killers copy-trader (FULL-closes only).
+"""Open-risk monitor for the Killers copy-trader (alerts only).
 
-One cron-style run per invocation (NO daemon loop). Each run:
+Has no write path to Freqtrade: it never places, closes or cancels anything.
+Entry admission is the receiver's job (KILLERS_MAX_OPEN); this script checks
+that the open book still matches the sizing contract and says so when not.
 
-  1. GET /api/v1/status   → open trades (trade_id, pair, amount, current_rate,
-                            is_short, leverage).
-  2. GET /api/v1/balance  → wallet total (stake currency).
-  3. For each open trade, read the posted stop `sl_abs` from the receiver's
-     SQLite `positions` table, matched by ft_trade_id AND pair. Freqtrade
-     recycles trade_ids after a DB reset, so a row whose pair disagrees with
-     the live trade is treated as ft_trade_id-reuse corruption and SKIPPED
-     with a WARNING (never price one trade off another trade's stop).
-  4. loss_at_stop_i — the ADDITIONAL wallet loss if price moves from the
-     CURRENT mark to the posted SL (floating P&L to here is already marked):
-         long : max(0, (current_rate - sl_abs)) * remaining_amount
-         short: max(0, (sl_abs - current_rate)) * remaining_amount
-     Floored at 0: a position that would GAIN on the way to its stop
-     contributes no downside, and must not offset another position's risk.
-  5. If Σ loss_at_stop > CAP_PCT% * wallet_total, FULL-close (market, no
-     amount) the single position with the largest loss_at_stop, then
-     re-evaluate. Repeat at most 3 times per run (safety valve).
+Runs inside the killers-receiver container (same image, env and DB volume),
+one pass per invocation from host cron:
 
-FULL closes ONLY. The receiver reconciles a fully-gone trade cleanly as
-`reconciled_missing`; a PARTIAL close corrupts receiver pct_open/state
-accounting, so partials are FORBIDDEN here.
+    docker exec killers-receiver python3 /app/warden/risk_warden.py
 
-WARDEN_DRY_RUN (default true) logs what it WOULD close without calling
-forceexit. The DB is opened read-only.
+Each pass:
 
-Env:
-  WARDEN_FT_BASE      default http://127.0.0.1:8099
-  WARDEN_FT_USER      Freqtrade REST basic-auth user (default freqtrader)
-  WARDEN_FT_PASS      Freqtrade REST basic-auth pass (default mastertrader)
-  WARDEN_RECEIVER_DB  path to receiver.sqlite (read-only)
-  WARDEN_CAP_PCT      cap as percent of wallet total (default 10.0)
-  WARDEN_DRY_RUN      "true"/"false" (default true)
+  1. GET {KILLERS_FT_BASE_URL}/api/v1/status for the open trades.
+  2. Read each trade's posted stop (`sl_abs`) from the receiver DB
+     (KILLERS_DB, opened read-only), matched by ft_trade_id AND pair. A row
+     whose pair disagrees is reported, never priced off.
+  3. Capital at risk per trade = loss from ENTRY to the posted stop on the
+     remaining amount (long: max(0, open_rate - sl) * amount; short mirrored).
+     Measured from entry, not the current mark: open profit on a running
+     winner is not risk to cut, the exit ladder is meant to let it run.
+  4. Findings: total risk over the cap (default KILLERS_MAX_OPEN x
+     KILLERS_RISK_USD x 1.25); a single trade over 1.5 x KILLERS_RISK_USD;
+     an open trade with no matched posted stop; Freqtrade or DB unreadable.
+  5. Logs one line per pass. Sends a Telegram alert through KILLERS_NOTIFY_URL
+     only when the set of findings changes (state file beside the DB), so a
+     standing condition alerts once and again when it clears.
+
+Env (all already set on the receiver container):
+  KILLERS_FT_BASE_URL, KILLERS_FT_USERNAME, KILLERS_FT_PASSWORD
+  KILLERS_DB                 receiver SQLite path
+  KILLERS_RISK_USD, KILLERS_MAX_OPEN
+  KILLERS_NOTIFY_URL, TRADE_WEBHOOK_NOTIFY_TOKEN (optional)
+  WARDEN_RISK_CAP_USD        optional override of the total cap
+  WARDEN_STATE               optional state path (default <db dir>/warden_state.json)
 """
 from __future__ import annotations
 
@@ -45,74 +44,47 @@ import sqlite3
 import sys
 import urllib.error
 import urllib.request
+from pathlib import Path
 from typing import Optional
 
-MAX_CLOSES_PER_RUN = 3
-
-
-# ── Config ──────────────────────────────────────────────────────────────────
+TOTAL_SLACK = 1.25
+TRADE_SLACK = 1.5
 
 
 class WardenConfig:
     def __init__(self):
-        self.ft_base = os.environ.get("WARDEN_FT_BASE", "http://127.0.0.1:8099")
-        self.ft_user = os.environ.get("WARDEN_FT_USER", "freqtrader")
-        self.ft_pass = os.environ.get("WARDEN_FT_PASS", "mastertrader")
-        self.db_path = os.environ.get(
-            "WARDEN_RECEIVER_DB", "/var/lib/killers/receiver.sqlite")
-        self.cap_pct = float(os.environ.get("WARDEN_CAP_PCT", "10.0"))
-        self.dry_run = os.environ.get(
-            "WARDEN_DRY_RUN", "true").lower() in ("true", "1", "yes")
+        env = os.environ.get
+        self.ft_base = env("KILLERS_FT_BASE_URL", "http://ft-killers-scalp:8080").rstrip("/")
+        self.ft_user = env("KILLERS_FT_USERNAME", "")
+        self.ft_pass = env("KILLERS_FT_PASSWORD", "")
+        self.db_path = env("KILLERS_DB", "/var/lib/killers/receiver-hyperliquid.sqlite")
+        self.risk_usd = float(env("KILLERS_RISK_USD", "2"))
+        self.max_open = int(env("KILLERS_MAX_OPEN", "10"))
+        override = env("WARDEN_RISK_CAP_USD", "").strip()
+        self.cap_usd = (float(override) if override
+                        else self.max_open * self.risk_usd * TOTAL_SLACK)
+        self.trade_cap_usd = self.risk_usd * TRADE_SLACK
+        self.notify_url = env("KILLERS_NOTIFY_URL", "http://trade-webhook:8088/test/notify")
+        self.notify_token = env("TRADE_WEBHOOK_NOTIFY_TOKEN", "").strip()
+        self.state_path = Path(env("WARDEN_STATE", "") or
+                               Path(self.db_path).with_name("warden_state.json"))
 
 
 def _log(msg: str) -> None:
-    """Grep-able single-line stdout alert."""
     print(f"[warden] {msg}", flush=True)
 
 
-# ── Freqtrade REST (stdlib urllib) ──────────────────────────────────────────
-
-
-def _auth_header(cfg: WardenConfig) -> dict:
-    token = base64.b64encode(
-        f"{cfg.ft_user}:{cfg.ft_pass}".encode()).decode()
-    return {"Authorization": f"Basic {token}"}
-
-
-def http_get_json(cfg: WardenConfig, path: str, timeout: float = 10.0):
-    """GET {ft_base}{path} → parsed JSON, or None on any failure."""
-    url = f"{cfg.ft_base}{path}"
-    req = urllib.request.Request(url, headers=_auth_header(cfg), method="GET")
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return json.loads(r.read().decode())
-    except (urllib.error.URLError, urllib.error.HTTPError, ValueError, OSError) as e:
-        _log(f"WARNING http_get {path} failed: {e}")
-        return None
-
-
-def http_post_json(cfg: WardenConfig, path: str, body: dict,
-                   timeout: float = 10.0):
-    """POST JSON to {ft_base}{path} → (status, text)."""
-    url = f"{cfg.ft_base}{path}"
-    data = json.dumps(body).encode()
-    headers = {"Content-Type": "application/json", **_auth_header(cfg)}
-    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return r.status, r.read().decode()
-    except urllib.error.HTTPError as e:
-        return e.code, e.read().decode() if e.fp else str(e)
-    except (urllib.error.URLError, OSError) as e:
-        return 0, str(e)
-
-
 def get_open_trades(cfg: WardenConfig) -> Optional[list[dict]]:
-    """GET /api/v1/status → list of open-trade dicts, or None on failure."""
-    data = http_get_json(cfg, "/api/v1/status")
-    if data is None:
+    """GET /api/v1/status → list of open trades, or None when unreadable."""
+    token = base64.b64encode(f"{cfg.ft_user}:{cfg.ft_pass}".encode()).decode()
+    req = urllib.request.Request(f"{cfg.ft_base}/api/v1/status",
+                                 headers={"Authorization": f"Basic {token}"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            data = json.loads(r.read().decode())
+    except (urllib.error.URLError, ValueError, OSError) as e:
+        _log(f"WARNING /status failed: {e}")
         return None
-    # Freqtrade returns a bare list for /status.
     if isinstance(data, list):
         return data
     if isinstance(data, dict) and isinstance(data.get("trades"), list):
@@ -120,34 +92,24 @@ def get_open_trades(cfg: WardenConfig) -> Optional[list[dict]]:
     return None
 
 
-def get_wallet_total(cfg: WardenConfig) -> Optional[float]:
-    """GET /api/v1/balance → wallet 'total' (stake currency), or None."""
-    data = http_get_json(cfg, "/api/v1/balance")
-    if not isinstance(data, dict):
-        return None
-    total = data.get("total")
+def notify(cfg: WardenConfig, text: str) -> None:
+    """Best-effort Telegram alert via trade-webhook; never raises."""
+    if not cfg.notify_url:
+        return
+    headers = {"Content-Type": "application/json"}
+    if cfg.notify_token:
+        headers["X-Notify-Token"] = cfg.notify_token
+    req = urllib.request.Request(cfg.notify_url, data=json.dumps({"text": text}).encode(),
+                                 headers=headers, method="POST")
     try:
-        return float(total) if total is not None else None
-    except (TypeError, ValueError):
-        return None
+        with urllib.request.urlopen(req, timeout=5) as r:
+            r.read()
+    except (urllib.error.URLError, OSError) as e:
+        _log(f"WARNING notify failed: {e}")
 
 
-def forceexit_full(cfg: WardenConfig, trade_id) -> tuple[int, str]:
-    """FULL market close (no amount → whole position)."""
-    return http_post_json(cfg, "/api/v1/forceexit",
-                          {"tradeid": str(trade_id), "ordertype": "market"})
-
-
-# ── Risk math ───────────────────────────────────────────────────────────────
-
-
-def load_sl_abs(conn: sqlite3.Connection, ft_trade_id,
-                pair: str) -> tuple[Optional[float], str]:
-    """Return (sl_abs, reason) for a live trade.
-
-    Guards the known ft_trade_id-reuse corruption: the receiver row must agree
-    on pair. reason ∈ {'matched','pair_mismatch','no_row','no_sl'}.
-    """
+def load_sl_abs(conn: sqlite3.Connection, ft_trade_id, pair: str) -> tuple[Optional[float], str]:
+    """(sl_abs, reason); reason ∈ {'matched','pair_mismatch','no_row','no_sl'}."""
     row = conn.execute(
         "SELECT sl_abs, pair FROM positions WHERE ft_trade_id = ? "
         "ORDER BY (state='open') DESC, open_date DESC LIMIT 1",
@@ -155,193 +117,105 @@ def load_sl_abs(conn: sqlite3.Connection, ft_trade_id,
     ).fetchone()
     if row is None:
         return None, "no_row"
-    row_pair = row[1] if not isinstance(row, sqlite3.Row) else row["pair"]
-    sl = row[0] if not isinstance(row, sqlite3.Row) else row["sl_abs"]
-    if row_pair != pair:
+    if row["pair"] != pair:
         return None, "pair_mismatch"
-    if sl is None:
-        return None, "no_sl"
     try:
-        sl_f = float(sl)
+        sl = float(row["sl_abs"])
     except (TypeError, ValueError):
         return None, "no_sl"
-    if sl_f <= 0:
-        return None, "no_sl"
-    return sl_f, "matched"
+    return (sl, "matched") if sl > 0 else (None, "no_sl")
 
 
-def loss_at_stop(trade: dict, sl_abs: float) -> float:
-    """Additional wallet loss if price runs from current mark to posted SL.
-
-    Floored at 0 (a stop on the favorable side contributes no downside).
-    """
+def risk_from_entry(trade: dict, sl_abs: float) -> float:
+    """Loss from entry to the posted stop on the remaining amount, floored at 0."""
     try:
         amount = float(trade.get("amount") or 0.0)
-        current = float(trade.get("current_rate") or 0.0)
+        entry = float(trade.get("open_rate") or 0.0)
     except (TypeError, ValueError):
         return 0.0
-    if amount <= 0 or current <= 0:
+    if amount <= 0 or entry <= 0:
         return 0.0
-    is_short = bool(trade.get("is_short"))
-    if is_short:
-        decline = sl_abs - current
-    else:
-        decline = current - sl_abs
-    return max(0.0, decline) * amount
+    move = sl_abs - entry if trade.get("is_short") else entry - sl_abs
+    return max(0.0, move) * amount
 
 
-def _evaluate(conn: sqlite3.Connection,
-              trades: list[dict]) -> tuple[float, list[dict]]:
-    """Return (total_risk, per_trade) for the given working set of trades.
-
-    per_trade entries carry loss_at_stop; pair-mismatched / SL-less trades are
-    skipped (logged) and excluded from the risk sum and from close candidacy.
-    """
-    per_trade: list[dict] = []
-    total = 0.0
+def assess(cfg: WardenConfig, conn: sqlite3.Connection, trades: list[dict]) -> dict:
+    """Pure evaluation of one snapshot → summary with sorted findings."""
+    findings, per_trade, total = [], [], 0.0
     for t in trades:
-        tid = t.get("trade_id")
-        pair = t.get("pair")
+        tid, pair = t.get("trade_id"), t.get("pair")
         sl_abs, reason = load_sl_abs(conn, tid, pair)
         if reason != "matched":
-            if reason == "pair_mismatch":
-                _log(f"WARNING trade_id={tid} pair={pair} SKIPPED — "
-                     f"receiver row pair disagrees (ft_trade_id reuse); "
-                     f"not pricing off a stale stop")
-            else:
-                _log(f"WARNING trade_id={tid} pair={pair} SKIPPED — {reason} "
-                     f"(no posted SL to bound risk)")
+            findings.append(f"unmatched:{tid}:{pair}:{reason}")
             continue
-        risk = loss_at_stop(t, sl_abs)
-        per_trade.append({"trade_id": tid, "pair": pair, "sl_abs": sl_abs,
-                          "loss_at_stop": risk,
-                          "amount": float(t.get("amount") or 0.0)})
+        risk = risk_from_entry(t, sl_abs)
+        per_trade.append({"trade_id": tid, "pair": pair, "risk": risk})
         total += risk
-    return total, per_trade
+        if risk > cfg.trade_cap_usd:
+            findings.append(f"trade_over_cap:{tid}:{pair}")
+    if total > cfg.cap_usd:
+        findings.append("total_over_cap")
+    return {"total_risk": total, "cap_usd": cfg.cap_usd, "per_trade": per_trade,
+            "open": len(trades), "findings": sorted(findings)}
 
 
-# ── Main run ────────────────────────────────────────────────────────────────
-
-
-def run_once(cfg: WardenConfig,
-             conn: Optional[sqlite3.Connection] = None) -> dict:
-    """Execute one warden pass. Returns a summary dict."""
-    close_conn = False
-    if conn is None:
-        uri = f"file:{cfg.db_path}?mode=ro"
-        conn = sqlite3.connect(uri, uri=True)
-        conn.row_factory = sqlite3.Row
-        close_conn = True
+def _load_state(path: Path) -> list:
     try:
-        return _run_once_inner(cfg, conn)
-    finally:
-        if close_conn:
-            conn.close()
+        return json.loads(path.read_text()).get("findings", [])
+    except (OSError, ValueError, AttributeError):
+        return []
 
 
-def _run_once_inner(cfg: WardenConfig, conn: sqlite3.Connection) -> dict:
-    summary = {"wallet_total": None, "cap_usd": None, "initial_risk": None,
-               "breached": False, "actions": [], "remaining_risk": None,
-               "attempted_failed": [], "dry_run": cfg.dry_run, "status": "ok"}
+def _save_state(path: Path, findings: list) -> None:
+    try:
+        path.write_text(json.dumps({"findings": findings}))
+    except OSError as e:
+        _log(f"WARNING cannot write state {path}: {e}")
 
+
+def _describe(summary: dict) -> str:
+    worst = sorted(summary["per_trade"], key=lambda x: -x["risk"])[:3]
+    top = ", ".join(f"{p['pair']} ${p['risk']:.2f}" for p in worst) or "none"
+    return (f"open={summary['open']} risk=${summary['total_risk']:.2f} "
+            f"cap=${summary['cap_usd']:.2f} largest: {top}")
+
+
+def run_once(cfg: WardenConfig, conn: Optional[sqlite3.Connection] = None) -> dict:
     trades = get_open_trades(cfg)
     if trades is None:
-        _log("WARNING /status unreachable — skipping run (no action)")
-        summary["status"] = "ft_unreachable"
-        return summary
-    wallet = get_wallet_total(cfg)
-    if wallet is None or wallet <= 0:
-        _log("WARNING /balance total unavailable — skipping run (no action)")
-        summary["status"] = "wallet_unavailable"
-        return summary
-
-    cap_usd = cfg.cap_pct / 100.0 * wallet
-    summary["wallet_total"] = wallet
-    summary["cap_usd"] = cap_usd
-
-    working = list(trades)
-    total_risk, per_trade = _evaluate(conn, working)
-    summary["initial_risk"] = total_risk
-
-    if total_risk <= cap_usd:
-        _log(f"OK risk={total_risk:.2f} cap={cap_usd:.2f} "
-             f"(cap_pct={cfg.cap_pct} wallet={wallet:.2f}) "
-             f"open={len(per_trade)} — no action")
-        summary["remaining_risk"] = total_risk
-        return summary
-
-    summary["breached"] = True
-    _log(f"BREACH risk={total_risk:.2f} > cap={cap_usd:.2f} "
-         f"(cap_pct={cfg.cap_pct} wallet={wallet:.2f}) open={len(per_trade)}")
-
-    closes = 0
-    attempted_failed: list[dict] = []
-    while total_risk > cap_usd and closes < MAX_CLOSES_PER_RUN and per_trade:
-        # Largest loss_at_stop first.
-        victim = max(per_trade, key=lambda x: x["loss_at_stop"])
-        action = {"trade_id": victim["trade_id"], "pair": victim["pair"],
-                  "loss_at_stop": victim["loss_at_stop"],
-                  "dry_run": cfg.dry_run, "closed": False,
-                  "ft_status": None}
-        remove_victim = False
-        if cfg.dry_run:
-            _log(f"WOULD-CLOSE trade_id={victim['trade_id']} pair={victim['pair']} "
-                 f"loss_at_stop={victim['loss_at_stop']:.2f} (dry-run)")
-            remove_victim = True
-        else:
-            st, body = forceexit_full(cfg, victim["trade_id"])
-            action["ft_status"] = st
-            ok = 200 <= st < 300
-            action["closed"] = ok
-            if ok:
-                _log(f"CLOSED trade_id={victim['trade_id']} pair={victim['pair']} "
-                     f"loss_at_stop={victim['loss_at_stop']:.2f} ft_status={st}")
-                remove_victim = True
-            else:
-                _log(f"ERROR forceexit trade_id={victim['trade_id']} "
-                     f"pair={victim['pair']} ft_status={st} body={body[:200]} — "
-                     f"keeping in remaining risk, aborting run (FT state "
-                     f"unreliable)")
-                attempted_failed.append(
-                    {"trade_id": victim["trade_id"], "pair": victim["pair"],
-                     "loss_at_stop": victim["loss_at_stop"], "ft_status": st})
-        summary["actions"].append(action)
-
-        if not remove_victim:
-            # A failed forceexit means the exchange/FT state is unreliable —
-            # do NOT attempt further closes this run (another close could act
-            # on a stale snapshot). The victim's risk stays in the total so
-            # remaining_risk does not under-report; the next run retries.
-            break
-
-        # Re-evaluate: drop the victim from the working set (a full close
-        # removes its risk). We don't re-fetch /status — one authoritative
-        # snapshot per run; the wallet cap is ~constant intra-run. In dry-run
-        # we keep simulating removals to report how many closes it would take.
-        working = [t for t in working if t.get("trade_id") != victim["trade_id"]]
-        total_risk, per_trade = _evaluate(conn, working)
-        closes += 1
-
-    summary["remaining_risk"] = total_risk
-    summary["attempted_failed"] = attempted_failed
-    if attempted_failed:
-        _log(f"ABORTED after {closes} close(s): forceexit failed for "
-             f"{len(attempted_failed)} trade(s) — remaining_risk={total_risk:.2f} "
-             f"> cap={cap_usd:.2f} attempted_failed={attempted_failed}")
-    elif total_risk > cap_usd:
-        _log(f"STILL-BREACHED after {closes} close(s): "
-             f"remaining_risk={total_risk:.2f} > cap={cap_usd:.2f} "
-             f"(safety-valve max={MAX_CLOSES_PER_RUN}) "
-             f"attempted_failed={attempted_failed}")
+        summary = {"total_risk": 0.0, "cap_usd": cfg.cap_usd, "per_trade": [],
+                   "open": 0, "findings": ["ft_unreachable"]}
     else:
-        _log(f"RESOLVED after {closes} close(s): remaining_risk={total_risk:.2f} "
-             f"<= cap={cap_usd:.2f} attempted_failed={attempted_failed}")
+        own = conn is None
+        try:
+            if own:
+                conn = sqlite3.connect(f"file:{cfg.db_path}?mode=ro", uri=True)
+                conn.row_factory = sqlite3.Row
+            summary = assess(cfg, conn, trades)
+        except sqlite3.Error as e:
+            _log(f"WARNING receiver DB unreadable: {e}")
+            summary = {"total_risk": 0.0, "cap_usd": cfg.cap_usd, "per_trade": [],
+                       "open": len(trades), "findings": ["db_unreadable"]}
+        finally:
+            if own and conn is not None:
+                conn.close()
+
+    findings = summary["findings"]
+    _log(("ALERT " + " ".join(findings) + " | " if findings else "OK ") + _describe(summary))
+    previous = _load_state(cfg.state_path)
+    if findings != previous:
+        if findings:
+            notify(cfg, "[killers-warden] " + ", ".join(findings) + " | " + _describe(summary))
+        elif previous:
+            notify(cfg, "[killers-warden] resolved | " + _describe(summary))
+        _save_state(cfg.state_path, findings)
+    summary["alerted"] = findings != previous
     return summary
 
 
 def main():
-    cfg = WardenConfig()
-    run_once(cfg)
+    run_once(WardenConfig())
+    return 0
 
 
 if __name__ == "__main__":
