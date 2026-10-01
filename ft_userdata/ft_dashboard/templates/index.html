@@ -5,16 +5,31 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>master-trader</title>
 <meta name="description" content="Live trading fleet · operational + pre-flight dashboard">
-<meta name="theme-color" content="#fafaf7">
+<meta name="theme-color">
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%230891b2'/><path d='M8 22 L13 14 L17 18 L24 8' stroke='%23ffffff' stroke-width='2.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
-<link rel="stylesheet" href="/static/styles.css?v=25">
+<link rel="stylesheet" href="/static/styles.css?v=26">
 <script defer
         src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.3/dist/cdn.min.js"
         integrity="sha384-iZD2X8o1Zdq0HR5H/7oa8W30WS4No+zWCKUPD7fHRay9I1Gf+C4F8sVmw7zec1wW"
         crossorigin="anonymous"></script>
 
-<link rel="stylesheet" href="/static/workspace.css?v=44">
-<script defer src="/static/price-chart.js?v=44"></script>
+<link rel="stylesheet" href="/static/workspace.css?v=45">
+<script data-theme-init>
+(() => {
+  const root = document.documentElement, key = 'master-trader-theme', media = matchMedia('(prefers-color-scheme: dark)');
+  const preference = () => { try { const value = localStorage.getItem(key); return value === 'light' || value === 'dark' ? value : 'system'; } catch { return 'system'; } };
+  const apply = () => {
+    const chosen = preference(), theme = chosen === 'system' ? (media.matches ? 'dark' : 'light') : chosen, previous = root.dataset.theme;
+    root.dataset.theme = theme;
+    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', getComputedStyle(root).getPropertyValue('--bg-0').trim());
+    if (previous && previous !== theme) document.dispatchEvent(new CustomEvent('themechange', { detail: { theme } }));
+  };
+  window.masterTheme = { preference, set(value) { try { localStorage.setItem(key, value); } catch {} apply(); } };
+  media.addEventListener('change', apply);
+  apply();
+})();
+</script>
+<script defer src="/static/price-chart.js?v=45"></script>
 </head>
 <body x-data="dash()" x-init="boot()" @keydown.escape.window="expandedTrade=null; $nextTick(() => _scheduleChartResize())">
 
@@ -49,6 +64,11 @@
       <span x-text="clock">—</span>
       <span>brasília · br</span>
       <span>refresh <span x-text="pollInterval">30</span>s</span>
+    </div>
+    <div class="scale-toggle theme-toggle" role="group" aria-label="Color theme">
+      <button type="button" :aria-pressed="themePreference === 'light'" @click="setTheme('light')">Light</button>
+      <button type="button" :aria-pressed="themePreference === 'dark'" @click="setTheme('dark')">Dark</button>
+      <button type="button" :aria-pressed="themePreference === 'system'" @click="setTheme('system')">System</button>
     </div>
     <button class="icon-btn" @click="refresh()">↻ refresh</button>
   </header>
@@ -561,7 +581,7 @@
             </div>
             <div class="verdict" :class="readyVerdict(bot).cls" x-text="readyVerdict(bot).text"
                  x-show="bot.baseline_comparable"></div>
-            <div class="verdict" style="background:var(--info-soft);color:var(--info);border-color:rgba(37,99,235,0.3);"
+            <div class="verdict" style="background:var(--info-soft);color:var(--info);border-color:rgb(var(--info-rgb) / .3);"
                  x-show="!bot.baseline_comparable"
                  x-text="bot.baseline_status === 'stale-pre-v2' ? 'fresh epoch · baseline stale' : 'observational'">observational</div>
           </div>
@@ -1140,7 +1160,7 @@
   // expose toMs so Alpine inline expressions can use it
   function toMs(ts) { return !ts ? 0 : ts > 1e12 ? ts : ts * 1000; }
 </script>
-<script src="/static/dashboard.js?v=44"></script>
+<script src="/static/dashboard.js?v=45"></script>
 <div class="chart-attribution"><a href="https://www.tradingview.com/" target="_blank" rel="noopener">Charts by TradingView</a> · <a href="/static/CHART-NOTICE.txt">Notice</a> · <a href="/static/CHART-LICENSE.txt">License</a></div>
 </body>
 </html>

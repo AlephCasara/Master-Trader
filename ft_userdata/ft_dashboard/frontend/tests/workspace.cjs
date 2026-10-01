@@ -27,5 +27,22 @@ const fs=require('fs');const root=require('path').join(__dirname,'../../');const
  for(const width of [390,768,1440]){await page.setViewportSize({width,height:1000});for(const tab of ['live','portfolio','trades','dryrun','bot:killers-ft']){await page.evaluate(tab=>Alpine.$data(document.body).setTab(tab),tab);await page.waitForTimeout(200);assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false,`${tab} overflow at ${width}`);
  if(tab==='portfolio'){for(let pass=0;pass<3;pass++){await page.evaluate(()=>Alpine.$data(document.body).renderPortfolioCharts());await page.waitForTimeout(100);const geometry=await page.locator('#chart-portfolio-equity [data-series]').evaluate(el=>({width:el.getBBox().width,plot:el.closest('svg').getBoundingClientRect().width}));assert(geometry.width>geometry.plot*.65,`Equity must fill plot after render/resize: ${JSON.stringify(geometry)}`);}}
  assert.equal((await page.locator('main:visible').innerText()).includes('undefined'),false);}}
- assert.deepEqual(errors,[]);console.log('Workspace overview, positions, expansion, Escape, mobile and bot detail passed');await browser.close();
+ await page.emulateMedia({colorScheme:'light'});await page.evaluate(()=>Alpine.$data(document.body).openPositionsTab());await page.waitForTimeout(1000);
+ const rgb=hex=>{const h=hex.trim().replace('#','');return [0,2,4].map(i=>parseInt(h.slice(i,i+2),16));};
+ const theme=()=>page.evaluate(()=>{const root=document.documentElement,token=name=>getComputedStyle(root).getPropertyValue(name).trim();return {theme:root.dataset.theme,scheme:getComputedStyle(root).colorScheme,bg:getComputedStyle(document.body).backgroundColor,bgToken:token('--bg-0'),chartToken:token('--chart-bg'),gridToken:token('--hairline'),pressed:[...document.querySelectorAll('.theme-toggle button')].map(b=>b.getAttribute('aria-pressed'))};});
+ const chartPixel=()=>page.locator('.trade-chart').first().evaluate(el=>{const canvas=[...el.querySelectorAll('canvas')].sort((a,b)=>b.width*b.height-a.width*a.height)[0];return Array.from(canvas.getContext('2d').getImageData(2,2,1,1).data.slice(0,3));});
+ let themed=await theme();assert.equal(themed.theme,'light');assert.deepEqual(themed.pressed,['false','false','true']);assert.deepEqual(await chartPixel(),rgb(themed.chartToken));
+ await page.getByRole('button',{name:'Dark',exact:true}).focus();await page.keyboard.press('Enter');await page.waitForTimeout(400);
+ themed=await theme();assert.equal(themed.theme,'dark');assert.equal(themed.scheme,'dark');assert.equal(themed.bg,`rgb(${rgb(themed.bgToken).join(', ')})`);assert.notDeepEqual(rgb(themed.bgToken),[244,246,248]);assert.deepEqual(themed.pressed,['false','true','false']);
+ assert.deepEqual(await chartPixel(),rgb(themed.chartToken),'Position chart background must follow the theme');
+ await page.evaluate(()=>Alpine.$data(document.body).setTab('portfolio'));await page.waitForTimeout(500);
+ assert.equal(await page.locator('#chart-portfolio-equity svg line').first().getAttribute('stroke'),themed.gridToken);
+ await page.getByRole('button',{name:'Light',exact:true}).click();await page.waitForTimeout(200);assert.equal(await page.locator('#chart-portfolio-equity svg line').first().getAttribute('stroke'),(await theme()).gridToken,'Analytics must redraw on theme change');assert.notEqual((await theme()).gridToken,themed.gridToken);
+ await page.getByRole('button',{name:'Dark',exact:true}).click();await page.waitForTimeout(200);
+ await page.reload();await page.waitForTimeout(1800);themed=await theme();assert.equal(themed.theme,'dark','Theme preference must persist across reload');assert.deepEqual(themed.pressed,['false','true','false']);
+ await page.getByRole('button',{name:'System',exact:true}).click();await page.waitForTimeout(200);assert.equal((await theme()).theme,'light');
+ await page.emulateMedia({colorScheme:'dark'});await page.waitForTimeout(200);assert.equal((await theme()).theme,'dark','System must follow prefers-color-scheme');
+ await page.emulateMedia({colorScheme:'light'});await page.waitForTimeout(200);assert.equal((await theme()).theme,'light');
+ await page.reload();await page.waitForTimeout(1800);assert.deepEqual((await theme()).pressed,['false','false','true']);
+ assert.deepEqual(errors,[]);console.log('Workspace overview, positions, expansion, Escape, mobile and bot detail, theme passed');await browser.close();
 })().catch(e=>{console.error(e);process.exit(1)});
