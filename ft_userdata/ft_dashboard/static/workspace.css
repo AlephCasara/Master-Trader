@@ -7,8 +7,8 @@
 :root {
   --bg-0:#f4f6f8; --bg-1:#e8edf1; --surface:#fff; --surface-2:#f6f8fa; --surface-3:#eef2f5;
   --border:#dce3e9; --border-soft:#dce3e9; --hairline:#edf1f4;
-  --text:#17232f; --text-2:#465766; --text-3:#61717f; --text-faint:#61717f;
-  --accent:#176c84; --accent-soft:#e8f2f5; --pos:#16714b; --neg:#ba3a35;
+  --text:#17232f; --text-2:#465766; --text-3:#60707e; --text-faint:#60707e;
+  --accent:#176c84; --accent-soft:#e8f2f5; --pos:#16714b; --neg:#ba3a35; --warn:#906412; --info:#0c758e;
   --r:12px; --r-sm:6px; --el1:none; --el2:none; --el3:0 12px 40px #17232f18;
   --font-sans:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
   --space-tight:8px; --space-group:16px; --space-panel:20px; --space-section:24px;
@@ -22,7 +22,7 @@
   --neg-strong:#8f3028; --danger-text:#a52b27; --danger-border:#c86c68; --danger-hover-bg:#fff1f0;
   --exit-active-text:#12613f; --exit-active-bg:#edf7f1; --exit-stop-text:#a62d28; --exit-stop-bg:#fcf1f0;
   --exit-pending-text:#805500; --exit-pending-bg:#fbf6e8;
-  --booked-from:#15a16a; --booked-to:#0a8f5b; --accent-stripe:#eaf4f7; --neg-stripe:#f7dad6;
+  --booked-from:#118658; --booked-to:#098555; --accent-stripe:#eaf4f7; --neg-stripe:#f9e2df;
   --chart-bg:#ffffff; --chart-text:#526170; --chart-grid:#edf0f2; --chart-up:#16714b; --chart-down:#c23b35;
   --chart-entry:#176c84; --chart-pending:#9a690a; --chart-level:#657482; --chart-crosshair:#9ba8b3;
   --chart-equity:#0e87a3; --chart-drawdown:#d2473a; --chart-legacy:#61717f;

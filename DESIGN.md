@@ -9,7 +9,7 @@ colors:
   border: "#dce3e9"
   text: "#17232f"
   text-secondary: "#465766"
-  text-muted: "#61717f"
+  text-muted: "#60707e"
   positive: "#16714b"
   negative: "#ba3a35"
   chart-negative: "#c23b35"
@@ -88,18 +88,18 @@ one-pixel border. Body text is light gray rather than white.
 | `--border` / `--hairline` | `#dce3e9` / `#edf1f4` | `#333d48` / `#29313a` |
 | `--text` | `#17232f` | `#d5dce3` |
 | `--text-2` | `#465766` | `#aab5c0` |
-| `--text-3` | `#61717f` | `#939fac` |
+| `--text-3` | `#60707e` | `#939fac` |
 | `--accent` | `#176c84` | `#62b4ca` |
 | `--pos` / `--pos-soft` | `#16714b` / `#e2f3ea` | `#6cc196` / `#183326` |
 | `--neg` / `--neg-soft` | `#ba3a35` / `#fbe8e6` | `#ec8b83` / `#3a1f1f` |
-| `--warn` / `--warn-soft` | `#b07a16` / `#f7eed8` | `#d8ad5e` / `#362c17` |
+| `--warn` / `--warn-soft` | `#906412` / `#f7eed8` | `#d8ad5e` / `#362c17` |
+| `--info` / `--info-soft` | `#0c758e` / `#dff0f4` | `#6fb6d0` / `#1a3340` |
 | `--chart-up` / `--chart-down` | `#16714b` / `#c23b35` | `#5fb98b` / `#e47c73` |
 | `--chart-pending` | `#9a690a` | `#d4a24c` |
 | `--control-border` | `#61717f` | `#7f8c99` |
 
 `ft_userdata/ft_dashboard/tests/test_theme_contrast.py` computes WCAG ratios from these files: text pairs
-need 4.5:1 and the focus outline, control borders and chart lines need 3:1. Light
-pairs that already fall short are listed there as strict expected failures.
+need 4.5:1 and the focus outline, control borders and chart lines need 3:1.
 Lightweight Charts picks its light or dark TradingView logo from the chart text
 color, so dark `--chart-text` must stay light enough to select the light logo;
 the browser tests check the rendered logo contrast.

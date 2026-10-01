@@ -31,16 +31,6 @@ NON_TEXT = [('--accent', background) for background in BACKGROUNDS] + [
     '--chart-up', '--chart-down', '--chart-entry', '--chart-pending', '--chart-level',
     '--chart-equity', '--chart-drawdown', '--chart-legacy',
 ]]
-LIGHT_KNOWN_FAILURES = {
-    ('--text-3', '--surface-3'), ('--text-faint', '--surface-3'),
-    ('--warn', '--bg-0'), ('--warn', '--surface'), ('--warn', '--surface-2'), ('--warn', '--surface-3'),
-    ('--warn', '--surface-raised'), ('--warn', '--warn-soft'),
-    ('--info', '--bg-0'), ('--info', '--surface'), ('--info', '--surface-2'), ('--info', '--surface-3'),
-    ('--info', '--surface-raised'), ('--info', '--info-soft'),
-    ('--on-fill', '--booked-from'), ('--on-fill', '--booked-to'), ('--neg', '--neg-stripe'),
-}
-
-
 def blocks(path):
     css = re.sub(r'/\*.*?\*/', '', path.read_text(), flags=re.S)
     found = {}
@@ -86,9 +76,7 @@ def cases():
     text = [(fg, bg) for fg in TEXT for bg in BACKGROUNDS] + SEMANTIC_TEXT
     for theme in THEMES:
         for pair, minimum in [*((p, TEXT_MIN) for p in text), *((p, NON_TEXT_MIN) for p in NON_TEXT)]:
-            known = theme == 'light' and pair in LIGHT_KNOWN_FAILURES
-            marks = [pytest.mark.xfail(strict=True, reason='existing light pair below WCAG minimum')] if known else []
-            yield pytest.param(theme, *pair, minimum, id=f'{theme}:{pair[0]}-on-{pair[1]}', marks=marks)
+            yield pytest.param(theme, *pair, minimum, id=f'{theme}:{pair[0]}-on-{pair[1]}')
 
 
 @pytest.mark.parametrize('theme,foreground,background,minimum', list(cases()))
