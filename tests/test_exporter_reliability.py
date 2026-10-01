@@ -215,3 +215,41 @@ def test_external_cash_flows_preserve_dollar_drawdown(exporter, monkeypatch):
     assert exporter._portfolio_peak == 200
     exporter.check_circuit_breaker(0, 145, net_transfers=50)
     assert exporter._portfolio_peak == 150
+
+
+def _gateway_ok(exporter, monkeypatch):
+    class Response:
+        def raise_for_status(self): pass
+        def json(self): return {'status': 'ok', 'observed_at': exporter.time.time()}
+    monkeypatch.setattr(exporter.requests, 'get', lambda *a, **k: Response())
+
+
+def test_all_dry_run_fleet_is_fully_observed_with_no_equity(exporter, monkeypatch):
+    exporter._membership_complete = True
+    exporter._live_bots = []
+    _gateway_ok(exporter, monkeypatch)
+    result = exporter.observe_accounts()
+    assert result['complete'] is True
+    assert result['accounts'] == {}
+    assert result['equity'] is None
+    assert result['errors'] == []
+
+
+def test_unobserved_membership_with_no_live_bots_stays_incomplete(exporter, monkeypatch):
+    exporter._membership_complete = False
+    exporter._live_bots = []
+    _gateway_ok(exporter, monkeypatch)
+    result = exporter.observe_accounts()
+    assert result['complete'] is False
+    assert result['equity'] is None
+    assert 'Live account membership is not fully observed' in result['errors']
+
+
+def test_health_with_no_equity_keeps_peak_without_drawdown(exporter, monkeypatch, tmp_path):
+    monkeypatch.setattr(exporter, 'ACCOUNT_STATE_FILE', tmp_path / 'account_health.json')
+    exporter._portfolio_peak = 120.0
+    observation = {'complete': True, 'equity': None, 'accounts': {}, 'errors': []}
+    exporter.save_account_health(observation)
+    saved = json.loads((tmp_path / 'account_health.json').read_text())
+    assert saved['peak'] == 120.0
+    assert 'drawdown_pct' not in saved

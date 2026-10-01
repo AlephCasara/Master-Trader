@@ -361,10 +361,8 @@ def observe_accounts() -> dict:
     except (OSError, ValueError, KeyError, TypeError):
         result["complete"] = False
         result["errors"].append("External cash-flow ledger unavailable or invalid")
-    if not groups:
-        result["complete"] = False
     result["equity"] = (sum(a["equity"] for a in result["accounts"].values())
-                        if result["complete"] else None)
+                        if result["complete"] and groups else None)
     if not _membership_complete:
         result["errors"].append("Live account membership is not fully observed")
     return result
@@ -373,7 +371,7 @@ def observe_accounts() -> dict:
 def save_account_health(observation):
     observation["breaker_triggered"] = _circuit_breaker_triggered
     observation["peak"] = _portfolio_peak
-    if observation.get("complete") and _portfolio_peak > 0:
+    if observation.get("equity") is not None and _portfolio_peak > 0:
         observation["drawdown_pct"] = max(0, (_portfolio_peak - observation["equity"]) / _portfolio_peak * 100)
     try:
         ACCOUNT_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
