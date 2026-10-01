@@ -21,5 +21,4 @@ USER ftuser
 # Resolves USER_DATA = script_dir/user_data -> /freqtrade/user_data (the
 # fade bot's volume), reproducing the local funding-refresh paths exactly.
 COPY download_funding_rates.py /freqtrade/download_funding_rates.py
-COPY zeabur/mt-run-*.sh /usr/local/bin/
-RUN chmod +x /usr/local/bin/mt-run-*.sh
+COPY --chmod=755 zeabur/mt-run-*.sh /usr/local/bin/
