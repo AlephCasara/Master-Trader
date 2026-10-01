@@ -96,6 +96,40 @@ def test_remainder_is_valued_at_the_group_price_with_freqtrade_reserve():
                               [.35, .362, .375, .39, .41, .435, .465, .5], 10) == [(7, .5, 65)]
 
 
+def test_arming_snapshot_with_initial_stop_uses_posted_stop_reserve():
+    """#106 review: at arming Freqtrade can still report the strategy's
+    initial -0.07 ratio (reserve ~1.13). The posted stop at 3x makes the
+    later ratio ~0.4 (reserve capped 1.5), so a split planned from the
+    snapshot would leave a remainder Freqtrade refuses at the second exit."""
+    targets = [.35, .362, .375, .39, .41, .435, .465, .5]
+    early = trade(65, stop_loss_ratio=-0.07)
+    assert executable_targets(early, targets, 10)[0] == (3, .39, 32)
+    early.update(open_rate=0.33934, leverage=3)
+    assert executable_targets(early, targets, 10, planned_stop=0.29) == [(7, .5, 65)]
+    # A posted stop that keeps the ratio small changes nothing.
+    assert executable_targets(early, targets, 10, planned_stop=0.335)[0] == (3, .39, 32)
+
+
+def test_arming_path_passes_the_posted_stop(monkeypatch):
+    monkeypatch.setenv("KILLERS_EXECUTION_VENUE", "hyperliquid")
+    cfg, conn, pos_id = _setup_db()
+    conn.execute("UPDATE positions SET sl_abs=0.29 WHERE pos_id=?", (pos_id,))
+    snapshot = dict(trade(65, stop_loss_ratio=-0.07), open_rate=0.33934, leverage=3)
+
+    async def get(*a, **k):
+        return snapshot
+
+    async def post(*a, **k):
+        return {"status": 200, "body": "{}"}
+
+    with patch.object(receiver, "ft_get_trade", side_effect=get), \
+         patch.object(receiver, "ft_force_exit_limit", side_effect=post) as submit:
+        rows = _run(receiver._place_target_limits(
+            cfg, conn, pos_id, 42, [.35, .362, .375, .39, .41, .435, .465, .5], 65 / 8))
+    assert [(r["idx"], r["amount"]) for r in rows] == [(7, 65)]
+    assert submit.call_args.args[2:4] == (65, .5)
+
+
 def test_reject_unexecutable_entire_position():
     with pytest.raises(ValueError, match="cannot support"):
         executable_targets(trade(10), [.35, .36], 10)

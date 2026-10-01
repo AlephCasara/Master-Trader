@@ -214,8 +214,9 @@ services:
       # and removes liquidations. This bounded live evolution explicitly
       # supersedes the historical dry-only verdict; set "false" to revert.
       KILLERS_POSTED_SL: "true"
-      # Empty preserves existing policy until a reviewed prospective activation.
-      KILLERS_TP_ALLOCATIONS: ${KILLERS_TP_ALLOCATIONS:-}
+      # Pinned empty with the equal ladder below: a non-empty value would make
+      # new positions use frozen explicit allocations instead (#106).
+      KILLERS_TP_ALLOCATIONS: ""
       # Equal source ladder (2026-09-30, operator, #106). Pinned here, not read
       # from .env, so the running policy is the reviewed one. At the $12-risk
       # size the legacy planner sells 1/N at each posted target still ahead of

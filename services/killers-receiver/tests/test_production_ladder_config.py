@@ -54,7 +54,7 @@ SIGNALS = [
 def test_pinned_equal_ladder_policy():
     env = _env()
     assert env["KILLERS_TP_MODE"] == "legacy"
-    assert env["KILLERS_TP_ALLOCATIONS"] == "${KILLERS_TP_ALLOCATIONS:-}"
+    assert env["KILLERS_TP_ALLOCATIONS"] == ""
 
 
 @pytest.mark.parametrize("symbol, fill, sl, targets, step", SIGNALS)
@@ -74,14 +74,17 @@ def test_production_size_funds_a_ladder_leg_per_target(monkeypatch, symbol, fill
 
     step_d = Decimal(str(step))
     amount = float((Decimal(str(notional / fill)) / step_d).to_integral_value(rounding="ROUND_FLOOR") * step_d)
+    # As at arming: the snapshot may still carry the strategy's initial
+    # -0.07 stop; the receiver passes the posted stop for the later ratio.
     trade = {
         "amount": amount, "is_open": True, "nr_of_successful_entries": 1,
-        "is_short": False, "stop_loss_ratio": -distance * leverage,
+        "is_short": False, "stop_loss_ratio": -0.07,
+        "open_rate": fill, "leverage": leverage,
         "amount_precision": step, "precision_mode": 4,
         "price_precision": 0.00001, "precision_mode_price": 4,
         "contract_size": 1, "orders": [],
     }
-    plan = executable_targets(trade, targets, 10)
+    plan = executable_targets(trade, targets, 10, planned_stop=sl)
 
     indices = [idx for idx, _, _ in plan]
     # Every leg is executable and the ladder sells everything by the last target.
