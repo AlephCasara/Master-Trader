@@ -1782,8 +1782,18 @@ def _load_heartbeat() -> None:
         _heartbeat_probes[:] = probes[-HEARTBEAT_MAX_PROBES:]
 
 
+def _probe_url(endpoint: str) -> str:
+    # CLASSIFIER_HEARTBEAT_ENDPOINT follows the MT_CLASSIFY_ENDPOINT
+    # convention: the FULL chat/completions URL. Tolerate a base URL too —
+    # the first deploy doubled the path and 404'd (observed 2026-10-02).
+    url = endpoint.rstrip("/")
+    if not url.endswith("/chat/completions"):
+        url += "/chat/completions"
+    return url
+
+
 def _run_heartbeat_probe() -> dict:
-    url = CLASSIFIER_HEARTBEAT_ENDPOINT.rstrip("/") + "/chat/completions"
+    url = _probe_url(CLASSIFIER_HEARTBEAT_ENDPOINT)
     body = json.dumps({
         "model": CLASSIFIER_HEARTBEAT_MODEL,
         "messages": [{"role": "user", "content": "ping"}],

@@ -40,6 +40,9 @@ def test_ok_probe_records_and_persists_atomically(monkeypatch, tmp_path):
     assert probe["error_class"] == "ok"
     assert isinstance(probe["latency_ms"], int)
     assert seen["url"] == "http://classify.test/v1/chat/completions"
+    # Full-URL convention (MT_CLASSIFY_ENDPOINT style) must not double the path.
+    assert app._probe_url("http://classify.test/v1/chat/completions") == \
+        "http://classify.test/v1/chat/completions"
     assert seen["body"] == {
         "model": "qwen3-4b",
         "messages": [{"role": "user", "content": "ping"}],
