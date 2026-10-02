@@ -13,32 +13,34 @@
 # in the .py file for the 4h backtest, or create a 4h variant.
 
 set -e
-cd ~/ft_userdata
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
 
 DAYS=180
-TIMERANGE=$(date -u -v-${DAYS}d +%Y%m%d)-$(date -u +%Y%m%d)
+TIMERANGE=$(python3 -c 'from datetime import datetime, timedelta, timezone; import sys; now = datetime.now(timezone.utc); days = int(sys.argv[1]); print(f"{now - timedelta(days=days):%Y%m%d}-{now:%Y%m%d}")' "$DAYS")
 IMAGE="freqtradeorg/freqtrade:stable"
 CONFIG="/freqtrade/user_data/configs/backtest-SupertrendStrategy.json"
 
 echo "=== Downloading 4h data ==="
 docker run --rm \
-  -v ~/ft_userdata/user_data:/freqtrade/user_data \
-  $IMAGE \
+  -v "$SCRIPT_DIR/user_data:/freqtrade/user_data" \
+  "$IMAGE" \
   download-data \
-  --config $CONFIG \
+  --config "$CONFIG" \
   --timeframe 4h \
-  --timerange $TIMERANGE \
-  --days $DAYS
+  --timerange "$TIMERANGE" \
+  --days "$DAYS"
 
 echo ""
 echo "=== Backtesting SupertrendStrategy on 1h (current) ==="
 docker run --rm \
-  -v ~/ft_userdata/user_data:/freqtrade/user_data \
-  $IMAGE \
+  -v "$SCRIPT_DIR/user_data:/freqtrade/user_data" \
+  "$IMAGE" \
   backtesting \
   --strategy SupertrendStrategy \
-  --config $CONFIG \
-  --timerange $TIMERANGE \
+  --config "$CONFIG" \
+  --timerange "$TIMERANGE" \
   --timeframe 1h \
   --disable-max-market-positions
 
@@ -47,12 +49,12 @@ echo "=== Backtesting SupertrendStrategy on 4h ==="
 echo "NOTE: To test 4h, temporarily change timeframe='4h' in SupertrendStrategy.py"
 echo "Or create a SupertrendStrategy4H variant"
 docker run --rm \
-  -v ~/ft_userdata/user_data:/freqtrade/user_data \
-  $IMAGE \
+  -v "$SCRIPT_DIR/user_data:/freqtrade/user_data" \
+  "$IMAGE" \
   backtesting \
   --strategy SupertrendStrategy \
-  --config $CONFIG \
-  --timerange $TIMERANGE \
+  --config "$CONFIG" \
+  --timerange "$TIMERANGE" \
   --timeframe 4h \
   --disable-max-market-positions
 
