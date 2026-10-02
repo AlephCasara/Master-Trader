@@ -11,6 +11,7 @@ Endpoints:
   /api/equity/{key}    live cumulative + scaled backtest expected curve
   /api/candles/{key}   OHLC candles for current open trade pairs
   /api/killers/state   killers copy-trader paper-sim state (SQLite)
+  /api/backend_health  classifier backend heartbeat probe history
   /healthz             liveness
 """
 
@@ -24,7 +25,10 @@ import math
 import os
 import re
 import sqlite3 as _sqlite
+import threading
 import time
+import urllib.error
+import urllib.request
 from datetime import datetime
 from collections import defaultdict
 from contextlib import asynccontextmanager
@@ -320,6 +324,23 @@ LINEAGE_DB_DIR = Path(os.environ.get("LINEAGE_DB_DIR", "/var/lib/freqtrade-histo
 # Live killers-receiver SQLite (target_orders / positions) — separate DB from
 # the observer state.sqlite above. Empty => TP-ladder pill disabled (bar-only).
 KILLERS_RECEIVER_DB = os.environ.get("KILLERS_RECEIVER_DB", "")
+# Classifier backend heartbeat: the signal classifier runs on the home box
+# behind an OpenAI-shaped proxy. When that box is down DNS fails fast and the
+# outage is only inferable from missing decisions — this probe records it.
+# Each env falls back to its MT_CLASSIFY_* counterpart so the Zeabur service
+# needs no duplicated configuration.
+CLASSIFIER_HEARTBEAT_ENDPOINT = (
+    os.environ.get("CLASSIFIER_HEARTBEAT_ENDPOINT")
+    or os.environ.get("MT_CLASSIFY_ENDPOINT", "")
+)
+CLASSIFIER_HEARTBEAT_BEARER = (
+    os.environ.get("CLASSIFIER_HEARTBEAT_BEARER")
+    or os.environ.get("MT_CLASSIFY_BEARER", "")
+)
+CLASSIFIER_HEARTBEAT_MODEL = os.environ.get("CLASSIFIER_HEARTBEAT_MODEL", "qwen3-4b")
+CLASSIFIER_HEARTBEAT_INTERVAL_SEC = int(
+    os.environ.get("CLASSIFIER_HEARTBEAT_INTERVAL_SEC", "900")
+)
 
 
 def _deployment_fleet(registry: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1689,6 +1710,154 @@ async def _poll_loop():
         await asyncio.sleep(POLL_INTERVAL)
 
 
+# ── Classifier backend heartbeat ──────────────────────────────────────────────
+# Plain daemon thread, not an asyncio task: the probe is a single synchronous
+# POST every interval, deliberately off the poller's event loop so a hanging
+# backend socket can never stall bot polling. urllib opens a fresh connection
+# per request, which also sidesteps the backend proxy's desync of keep-alive
+# connections that auth-failed with a body.
+HEARTBEAT_TIMEOUT_S = 20.0
+HEARTBEAT_MAX_PROBES = 500
+HEARTBEAT_WINDOW_S = 86400
+
+_heartbeat_probes: list[dict[str, Any]] = []
+_heartbeat_lock = threading.Lock()
+
+
+def _heartbeat_state_path() -> Path:
+    """backend_heartbeat.json beside the actions DB; /tmp when unwritable.
+
+    The actions DB parent is the mounted state volume on Zeabur; on a local
+    checkout /var/lib is not writable, so the probe degrades to /tmp instead
+    of failing startup or the poll cycle.
+    """
+    actions_db = os.environ.get(
+        "DASHBOARD_ACTION_DB", "/var/lib/dashboard-actions/actions.sqlite"
+    )
+    state_dir = Path(os.environ.get("HEARTBEAT_STATE_DIR", str(Path(actions_db).parent)))
+    try:
+        state_dir.mkdir(parents=True, exist_ok=True)
+        return state_dir / "backend_heartbeat.json"
+    except OSError:
+        return Path("/tmp") / "backend_heartbeat.json"
+
+
+def _classify_heartbeat_error(exc: BaseException) -> str:
+    if isinstance(exc, urllib.error.HTTPError):
+        return "http_error"
+    text = str(exc).lower()
+    if "getaddrinfo" in text or "name or service not known" in text:
+        return "dns_fail"
+    if "timed out" in text or "timeout" in text:
+        return "timeout"
+    return "connect_fail"
+
+
+def _heartbeat_http_post(url: str, body: bytes, headers: dict[str, str]) -> int:
+    request = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    with urllib.request.urlopen(request, timeout=HEARTBEAT_TIMEOUT_S) as response:
+        response.read()
+        return response.status
+
+
+def _persist_heartbeat_locked() -> None:
+    """Atomic tmp+rename so a crash mid-write never truncates history."""
+    path = _heartbeat_state_path()
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        tmp.write_text(json.dumps({"probes": _heartbeat_probes}))
+        tmp.replace(path)
+    except OSError as exc:
+        log.warning("heartbeat persist failed (%s): %s", path, exc)
+
+
+def _load_heartbeat() -> None:
+    """Seed probe history from disk; unreadable or absent means start empty."""
+    try:
+        data = json.loads(_heartbeat_state_path().read_text())
+        probes = [p for p in data.get("probes", []) if isinstance(p, dict)]
+    except (OSError, ValueError, AttributeError):
+        probes = []
+    with _heartbeat_lock:
+        _heartbeat_probes[:] = probes[-HEARTBEAT_MAX_PROBES:]
+
+
+def _run_heartbeat_probe() -> dict:
+    url = CLASSIFIER_HEARTBEAT_ENDPOINT.rstrip("/") + "/chat/completions"
+    body = json.dumps({
+        "model": CLASSIFIER_HEARTBEAT_MODEL,
+        "messages": [{"role": "user", "content": "ping"}],
+        "max_tokens": 1,
+        "stream": False,
+    }).encode()
+    headers = {"Content-Type": "application/json"}
+    if CLASSIFIER_HEARTBEAT_BEARER:
+        headers["Authorization"] = f"Bearer {CLASSIFIER_HEARTBEAT_BEARER}"
+    started = time.time()
+    ok, error_class = True, "ok"
+    try:
+        _heartbeat_http_post(url, body, headers)
+    except Exception as exc:
+        ok, error_class = False, _classify_heartbeat_error(exc)
+    probe = {
+        "ts": time.time(),
+        "ok": ok,
+        "latency_ms": int(round((time.time() - started) * 1000)),
+        "error_class": error_class,
+    }
+    with _heartbeat_lock:
+        _heartbeat_probes.append(probe)
+        del _heartbeat_probes[:-HEARTBEAT_MAX_PROBES]
+        _persist_heartbeat_locked()
+    return probe
+
+
+def _heartbeat_summary() -> dict:
+    """Health payload for /api/backend_health. The endpoint is reduced to its
+    hostname — the full URL (path, token-bearing query) is never exposed."""
+    with _heartbeat_lock:
+        probes = list(_heartbeat_probes)
+    cutoff = time.time() - HEARTBEAT_WINDOW_S
+    recent = [p for p in probes if float(p.get("ts") or 0) >= cutoff]
+    return {
+        "interval_sec": CLASSIFIER_HEARTBEAT_INTERVAL_SEC,
+        "endpoint": urlparse(CLASSIFIER_HEARTBEAT_ENDPOINT).hostname
+        if CLASSIFIER_HEARTBEAT_ENDPOINT else "",
+        "last": probes[-1] if probes else None,
+        "failures_24h": sum(1 for p in recent if not p.get("ok")),
+        "history_24h": [
+            {"ts": p.get("ts"), "ok": bool(p.get("ok")), "latency_ms": p.get("latency_ms")}
+            for p in recent
+        ],
+    }
+
+
+def _classifier_backend_compact() -> dict:
+    """Subset of the heartbeat summary embedded in /api/state. history_24h
+    rides along so the frontend can confirm a multi-probe outage without a
+    second fetch — at the default 900s interval that is <=96 entries."""
+    summary = _heartbeat_summary()
+    return {
+        "last": summary["last"],
+        "failures_24h": summary["failures_24h"],
+        "history_24h": summary["history_24h"],
+    }
+
+
+def _heartbeat_loop() -> None:
+    if not CLASSIFIER_HEARTBEAT_ENDPOINT:
+        log.info("classifier heartbeat disabled (no endpoint configured)")
+        return
+    while True:
+        try:
+            probe = _run_heartbeat_probe()
+            if not probe["ok"]:
+                log.warning("classifier heartbeat failed: %s", probe["error_class"])
+        except Exception as exc:
+            log.exception("heartbeat cycle failed: %s", exc)
+        time.sleep(CLASSIFIER_HEARTBEAT_INTERVAL_SEC)
+
+
 # ── Status level ──────────────────────────────────────────────────────────────
 
 def _account_health() -> dict | None:
@@ -1808,7 +1977,11 @@ def _fleet_status() -> dict:
 async def lifespan(app: FastAPI):
     # Pre-warm events cache at startup
     _load_events()
+    _load_heartbeat()
     task = asyncio.create_task(_poll_loop())
+    threading.Thread(
+        target=_heartbeat_loop, name="classifier-heartbeat", daemon=True
+    ).start()
     log.info("ft-dashboard up; poll interval %ds", POLL_INTERVAL)
     yield
     task.cancel()
@@ -1852,6 +2025,7 @@ async def api_state():
       bots[key].gate1/2/3         — null for killers-scalp (no baseline to gate against)
       events_global               — fleet-wide event feed [{ts, label, kind, bot}]
       status                      — {level, summary, stale_bots}
+      classifier_backend          — {last, failures_24h} classifier probe summary
     """
     return JSONResponse({
         "last_poll": _cache.get("last_poll_finished_at"),
@@ -1862,7 +2036,16 @@ async def api_state():
         "events_global": _global_events(),
         "status": _fleet_status(),
         "account_health": _account_health(),
+        # Probe-level view of the home classifier backend so the frontend
+        # needs no second fetch to notice an outage.
+        "classifier_backend": _classifier_backend_compact(),
     })
+
+
+@app.get("/api/backend_health")
+async def api_backend_health():
+    """Classifier backend heartbeat history (Zeabur-side probe)."""
+    return JSONResponse(_heartbeat_summary())
 
 
 def _bot_meta(key: str) -> dict | None:

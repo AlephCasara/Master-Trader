@@ -19,6 +19,12 @@ from . import classifier, confidence_gate, rules_classifier, simulator, strict_o
 
 logger = logging.getLogger(__name__)
 
+# Backoff (seconds) between classify retries (bd Master-Trader-fg0). One entry
+# per retry after the initial failure; when attempts reach
+# MAX_CLASSIFY_ATTEMPTS the row is marked dropped and the loop stops.
+RETRY_DELAYS = (60, 300, 900)
+MAX_CLASSIFY_ATTEMPTS = 4
+
 
 # ── Config ─────────────────────────────────────────────────────────────────
 
@@ -64,7 +70,10 @@ class Config:
         self.db_path = os.getenv("KILLERS_DB", "/var/lib/killers/state.sqlite")
         self.claude_binary = os.getenv("KILLERS_CLAUDE_BINARY", "claude")
         self.claude_model = os.getenv("KILLERS_CLAUDE_MODEL") or None
-        self.claude_timeout = float(os.getenv("KILLERS_CLAUDE_TIMEOUT_SEC", "12"))
+        # Default 200s so the subprocess outlives mt-classify's 180s transport
+        # timeout: mt-classify then reports a clean error (recorded in
+        # classify_failures) instead of being SIGKILLed into a bare timeout.
+        self.claude_timeout = float(os.getenv("KILLERS_CLAUDE_TIMEOUT_SEC", "200"))
         self.heartbeat_sec = int(os.getenv("KILLERS_HEARTBEAT_SEC", "60"))
         # Receiver endpoint — when set, observer POSTs each classification.
         # Receiver translates to Freqtrade Futures REST. Leave unset to run
@@ -199,6 +208,51 @@ def persist_classification(conn: sqlite3.Connection, classification: dict) -> No
         row,
     )
     _append_revision(conn, "classification_revisions", _CLS_COLS, row)
+    conn.commit()
+
+
+# ── Falhas de classificacao (bd Master-Trader-fg0) ──────────────────────────
+# Uma classificacao que falhou nao e mais drop silencioso: grava-se a causa e
+# o observer reagenda com backoff. Nao ha dedup proprio aqui — o ingresso do
+# receiver ja deduplica por msg_id e persist_classification e INSERT OR
+# REPLACE.
+
+
+def record_classify_failure(conn: sqlite3.Connection, msg_id: int,
+                            error: Optional[dict]) -> None:
+    """Upsert da linha de falha: nova tentativa incrementa `attempts` e volta
+    o estado para pending (uma edicao reprocessada recomeca a contagem de
+    onde esta, sem apagar `first_failed_at`)."""
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        "INSERT INTO classify_failures (msg_id, first_failed_at, last_attempt_at, "
+        "attempts, error_class, detail, state) VALUES (?, ?, ?, 1, ?, ?, 'pending') "
+        "ON CONFLICT(msg_id) DO UPDATE SET "
+        "last_attempt_at = excluded.last_attempt_at, "
+        "attempts = attempts + 1, "
+        "error_class = excluded.error_class, "
+        "detail = excluded.detail, "
+        "state = 'pending'",
+        (msg_id, now, now, (error or {}).get("class", "unknown"),
+         (error or {}).get("detail")),
+    )
+    conn.commit()
+
+
+def _resolve_classify_failure(conn: sqlite3.Connection, msg_id: int) -> None:
+    conn.execute(
+        "UPDATE classify_failures SET state = 'resolved', resolved_at = ? "
+        "WHERE msg_id = ?",
+        (datetime.now(timezone.utc).isoformat(), msg_id),
+    )
+    conn.commit()
+
+
+def _drop_classify_failure(conn: sqlite3.Connection, msg_id: int) -> None:
+    conn.execute(
+        "UPDATE classify_failures SET state = 'dropped' WHERE msg_id = ?",
+        (msg_id,),
+    )
     conn.commit()
 
 
@@ -401,6 +455,7 @@ async def process_message(client, channel_id, conn, config, msg_dict: dict, sour
         return
 
     chain = await build_reply_chain(client, channel_id, conn, msg_dict)
+    error: Optional[dict] = None
 
     # FAST-PATH: try the rule parser first. Saves ~7s of Claude latency on
     # clean OPEN signals. Strict checks inside the parser reject anything
@@ -431,7 +486,7 @@ async def process_message(client, channel_id, conn, config, msg_dict: dict, sour
             msg_dict["id"], classification["signal_id"], classification["symbol"],
         )
     elif not used_fast_path:
-        classification = await classifier.classify(
+        classification, error = await classifier.classify_detailed(
             msg_dict, chain,
             binary=config.claude_binary,
             model=config.claude_model,
@@ -439,9 +494,28 @@ async def process_message(client, channel_id, conn, config, msg_dict: dict, sour
             template=config.classifier_template,
         )
     if classification is None:
+        # Falha de classificacao nao e mais drop silencioso (bd
+        # Master-Trader-fg0): grava a causa e agenda o retry com backoff.
+        record_classify_failure(conn, msg_dict["id"], error)
         logger.warning("[CLASSIFY FAIL] id=%d skipping downstream", msg_dict["id"])
+        asyncio.create_task(
+            _retry_classify(client, channel_id, conn, config, msg_dict, 0),
+            name=f"classify-retry-{msg_dict['id']}-0",
+        )
         return
 
+    await _process_classified(client, conn, config, msg_dict, classification,
+                              source_label, chain=chain,
+                              used_fast_path=used_fast_path)
+
+
+async def _process_classified(client, conn: sqlite3.Connection, config,
+                              msg_dict: dict, classification: dict,
+                              source_label: str, chain: Optional[list] = None,
+                              used_fast_path: bool = False) -> None:
+    """Everything downstream of a successful classification: gate verdict,
+    persistence, paper sim, receiver forward, shadow-classify spawn. Shared
+    by the live handler and the classify retry path (bd Master-Trader-fg0)."""
     # Gate de confianca em SHADOW (#65): so para o que o Claude decidiu. As
     # regras sao deterministicas (confidence fixo em 1.0) e nao sao avaliadas.
     # Grava o veredito e segue — o encaminhamento abaixo NAO depende dele.
@@ -488,10 +562,61 @@ async def process_message(client, channel_id, conn, config, msg_dict: dict, sour
     # already the primary classifier (no shadow needed).
     if used_fast_path:
         asyncio.create_task(
-            _shadow_classify(msg_dict, chain, classification, config,
+            _shadow_classify(msg_dict, chain or [], classification, config,
                              conn=conn, source_label=source_label),
             name=f"shadow-classify-{msg_dict['id']}",
         )
+
+
+async def _retry_classify(client, channel_id, conn: sqlite3.Connection,
+                          config, msg_dict: dict, attempt: int) -> None:
+    """One backoff step of the classify retry loop (bd Master-Trader-fg0).
+
+    Sleeps RETRY_DELAYS[attempt], re-classifies (reply chain rebuilt like the
+    main path — an earlier retry may have persisted the parent by now), and on
+    success marks the failure row resolved and runs the normal downstream
+    processing. On failure increments attempts and schedules the next delay;
+    at MAX_CLASSIFY_ATTEMPTS the row is marked dropped. Never raises: an
+    exception is logged and the row stays pending (visible, restartable)."""
+    msg_id = msg_dict["id"]
+    try:
+        await asyncio.sleep(RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)])
+        chain = await build_reply_chain(client, channel_id, conn, msg_dict)
+        classification, error = await classifier.classify_detailed(
+            msg_dict, chain,
+            binary=config.claude_binary,
+            model=config.claude_model,
+            timeout_sec=config.claude_timeout,
+            template=config.classifier_template,
+        )
+        if classification is not None:
+            _resolve_classify_failure(conn, msg_id)
+            logger.info("[CLASSIFY RETRY] id=%d resolved on attempt %d",
+                        msg_id, attempt + 1)
+            await _process_classified(client, conn, config, msg_dict,
+                                      classification, "claude")
+            return
+        record_classify_failure(conn, msg_id, error)
+        row = conn.execute(
+            "SELECT attempts FROM classify_failures WHERE msg_id = ?",
+            (msg_id,),
+        ).fetchone()
+        attempts = row[0] if row else attempt + 1
+        if attempts >= MAX_CLASSIFY_ATTEMPTS:
+            _drop_classify_failure(conn, msg_id)
+            logger.error("[CLASSIFY RETRY] id=%d DROPPED after %d attempts: %s",
+                         msg_id, attempts, (error or {}).get("detail"))
+            return
+        logger.warning("[CLASSIFY RETRY] id=%d attempt %d failed (%s) — retrying",
+                       msg_id, attempt + 1, (error or {}).get("class", "unknown"))
+        asyncio.create_task(
+            _retry_classify(client, channel_id, conn, config, msg_dict,
+                            attempt + 1),
+            name=f"classify-retry-{msg_id}-{attempt + 1}",
+        )
+    except Exception:
+        logger.exception("[CLASSIFY RETRY] id=%s retry crashed — row stays pending",
+                         msg_id)
 
 
 def _record_claude_shadow(conn: sqlite3.Connection, msg: dict, rule_cls: dict,
