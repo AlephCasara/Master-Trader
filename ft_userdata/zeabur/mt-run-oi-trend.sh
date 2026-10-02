@@ -6,4 +6,4 @@ mkdir -p /freqtrade/user_data/logs
 export FREQTRADE__DB_URL=sqlite:////freqtrade/user_data/tradesv3.dryrun.OITrendPullbackV1-local.sqlite
 python /opt/mt/configs/guard_db_mode.py --config /opt/mt/configs/OITrendPullbackV1.live.json
 sleep 80
-exec freqtrade trade --logfile /freqtrade/user_data/logs/OITrendPullbackV1-local.log --config /opt/mt/configs/OITrendPullbackV1.live.json --strategy OITrendPullbackV1
+exec freqtrade trade --logfile /freqtrade/user_data/logs/OITrendPullbackV1-local.log --config /opt/mt/configs/OITrendPullbackV1.live.json --strategy-path /opt/mt/strategies --strategy OITrendPullbackV1

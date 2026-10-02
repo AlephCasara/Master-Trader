@@ -31,4 +31,4 @@ export FREQTRADE__DB_URL=sqlite:////freqtrade/user_data/tradesv3.dryrun.FundingF
 
 python /opt/mt/configs/guard_db_mode.py --config /opt/mt/configs/FundingFadeV1.live.json
 sleep 70
-exec freqtrade trade --logfile /freqtrade/user_data/logs/FundingFadeV1-local.log --config /opt/mt/configs/FundingFadeV1.live.json --strategy FundingFadeV1
+exec freqtrade trade --logfile /freqtrade/user_data/logs/FundingFadeV1-local.log --config /opt/mt/configs/FundingFadeV1.live.json --strategy-path /opt/mt/strategies --strategy FundingFadeV1

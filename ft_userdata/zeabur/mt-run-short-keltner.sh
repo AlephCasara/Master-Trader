@@ -7,4 +7,4 @@ export FREQTRADE__DB_URL=sqlite:////freqtrade/user_data/tradesv3.dryrun.ShortKel
 export FREQTRADE__ORDER_TYPES__STOPLOSS_ON_EXCHANGE=false
 python /opt/mt/configs/guard_db_mode.py --config /opt/mt/configs/ShortKeltnerV2HL-live.json
 sleep 60
-exec freqtrade trade --logfile /freqtrade/user_data/logs/ShortKeltnerV2HLlive.log --config /opt/mt/configs/ShortKeltnerV2HL-live.json --strategy ShortKeltnerV2HL
+exec freqtrade trade --logfile /freqtrade/user_data/logs/ShortKeltnerV2HLlive.log --config /opt/mt/configs/ShortKeltnerV2HL-live.json --strategy-path /opt/mt/strategies --strategy ShortKeltnerV2HL

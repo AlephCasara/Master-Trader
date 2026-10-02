@@ -8,4 +8,4 @@ export FREQTRADE__DB_URL=sqlite:////freqtrade/user_data/tradesv3.dryrun.Insiders
 export FREQTRADE__ORDER_TYPES__STOPLOSS_ON_EXCHANGE=false
 python /opt/mt/configs/guard_db_mode.py --config /opt/mt/configs/InsidersScalpV2.json
 sleep 60
-exec freqtrade trade --logfile /freqtrade/user_data/logs/InsidersScalpV2-local.log --config /opt/mt/configs/InsidersScalpV2.json --strategy KillersScalpV1
+exec freqtrade trade --logfile /freqtrade/user_data/logs/InsidersScalpV2-local.log --config /opt/mt/configs/InsidersScalpV2.json --strategy-path /opt/mt/strategies --strategy KillersScalpV1

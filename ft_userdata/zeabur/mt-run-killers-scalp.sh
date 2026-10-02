@@ -7,4 +7,4 @@ export FREQTRADE__DB_URL=sqlite:////freqtrade/user_data/tradesv3.dryrun.KillersS
 export FREQTRADE__ORDER_TYPES__STOPLOSS_ON_EXCHANGE=false
 python /opt/mt/configs/guard_db_mode.py --config /opt/mt/configs/KillersScalpV1.json
 sleep 60
-exec freqtrade trade --logfile /freqtrade/user_data/logs/KillersScalpV1-local.log --config /opt/mt/configs/KillersScalpV1.json --strategy KillersScalpV1
+exec freqtrade trade --logfile /freqtrade/user_data/logs/KillersScalpV1-local.log --config /opt/mt/configs/KillersScalpV1.json --strategy-path /opt/mt/strategies --strategy KillersScalpV1
