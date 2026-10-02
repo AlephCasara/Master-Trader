@@ -1,0 +1,102 @@
+{
+  "_COMMENT": "Test-lane bot (internal dp: busy test lane). Dry-run only, machinery exercising, never a measurement epoch.",
+  "dry_run": true,
+  "dry_run_wallet": 200,
+  "cancel_open_orders_on_exit": true,
+  "trading_mode": "spot",
+  "stake_currency": "USDT",
+  "stake_amount": 20,
+  "tradable_balance_ratio": 0.99,
+  "fiat_display_currency": "USD",
+  "max_open_trades": 3,
+  "unfilledtimeout": {
+    "entry": 30,
+    "exit": 30,
+    "unit": "minutes"
+  },
+  "exchange": {
+    "name": "binance",
+    "key": "",
+    "secret": "",
+    "ccxt_config": {},
+    "ccxt_async_config": {},
+    "pair_whitelist": [
+      "BTC/USDT",
+      "ETH/USDT",
+      "SOL/USDT",
+      "XRP/USDT",
+      "DOGE/USDT",
+      "BNB/USDT",
+      "ADA/USDT",
+      "AVAX/USDT",
+      "LINK/USDT",
+      "NEAR/USDT",
+      "SUI/USDT",
+      "PEPE/USDT",
+      "TRX/USDT",
+      "DOT/USDT",
+      "SHIB/USDT",
+      "UNI/USDT",
+      "MATIC/USDT",
+      "FIL/USDT",
+      "APT/USDT",
+      "ARB/USDT",
+      "OP/USDT",
+      "ATOM/USDT",
+      "FET/USDT",
+      "RENDER/USDT",
+      "INJ/USDT",
+      "AAVE/USDT",
+      "LTC/USDT",
+      "ICP/USDT",
+      "XLM/USDT",
+      "ALGO/USDT"
+    ],
+    "pair_blacklist": []
+  },
+  "order_types": {
+    "entry": "limit",
+    "exit": "limit",
+    "emergency_exit": "market",
+    "force_entry": "market",
+    "force_exit": "market",
+    "stoploss": "limit",
+    "stoploss_on_exchange": false,
+    "stoploss_price_type": "last"
+  },
+  "pairlists": [
+    {
+      "method": "StaticPairList"
+    }
+  ],
+  "strategy": "ElliotV5",
+  "api_server": {
+    "enabled": true,
+    "listen_ip_address": "0.0.0.0",
+    "listen_port": 8080,
+    "verbosity": "error",
+    "enable_openapi": false,
+    "jwt_secret_key": "",
+    "CORS_origins": [],
+    "username": "",
+    "password": ""
+  },
+  "bot_name": "TestElliotV5",
+  "initial_state": "running",
+  "db_url": "sqlite:////freqtrade/user_data/tradesv3.dryrun.TestElliotV5.sqlite",
+  "entry_pricing": {
+    "price_side": "same",
+    "use_order_book": true,
+    "order_book_top": 1,
+    "price_last_balance": 0.0,
+    "check_depth_of_market": {
+      "enabled": false,
+      "bids_to_ask_delta": 1
+    }
+  },
+  "exit_pricing": {
+    "price_side": "same",
+    "use_order_book": true,
+    "order_book_top": 1
+  }
+}
