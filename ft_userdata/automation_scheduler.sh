@@ -81,7 +81,7 @@ if crontab -l 2>/dev/null | grep -q "Master Trader Automation"; then
 fi
 
 # Append new entries
-(crontab -l 2>/dev/null; echo "$CRON_ENTRIES") | crontab -
+(crontab -l 2>/dev/null || true; echo "$CRON_ENTRIES") | crontab -
 
 echo "Cron jobs installed successfully!"
 echo ""
