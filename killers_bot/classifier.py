@@ -186,6 +186,28 @@ Emit ONLY the JSON object. No prose. No markdown."""
 
 _JSON_RE = re.compile(r"\{[\s\S]*\}")
 
+# Error-class derivation (bd Master-Trader-fg0). Order matters: the transport
+# wrappers (mt-classify) print the exception/HTTP error on stderr, so the
+# first marker that matches the combined error text wins.
+_DNS_MARKERS = ("getaddrinfo", "name or service not known",
+                "temporary failure in name resolution")
+_CONNECT_MARKERS = ("connection refused", "connection reset",
+                    "connection timed out")
+_HTTP_RE = re.compile(r"http (\d+)")
+
+
+def error_class_from_text(text: str) -> str:
+    """Map stderr/exception text to a stable error class."""
+    lowered = text.lower()
+    if any(m in lowered for m in _DNS_MARKERS):
+        return "dns_fail"
+    if any(m in lowered for m in _CONNECT_MARKERS):
+        return "connect_fail"
+    m = _HTTP_RE.search(lowered)
+    if m:
+        return "http_429" if m.group(1) == "429" else "http_error"
+    return "unknown"
+
 
 def build_prompt(msg: dict, reply_chain: list[dict],
                  template: str = PROMPT_TEMPLATE) -> str:
@@ -203,7 +225,7 @@ def build_prompt(msg: dict, reply_chain: list[dict],
     )
 
 
-async def classify(
+async def classify_detailed(
     msg: dict,
     reply_chain: list[dict],
     *,
@@ -211,19 +233,13 @@ async def classify(
     model: Optional[str] = None,
     timeout_sec: float = 10.0,
     template: str = PROMPT_TEMPLATE,
-) -> Optional[dict]:
-    """Spawn `claude -p PROMPT --output-format json --print` subprocess.
+) -> "tuple[Optional[dict], Optional[dict]]":
+    """classify() with the failure reason attached (bd Master-Trader-fg0).
 
-    `binary` may be a single executable name OR a multi-word command
-    prefix (e.g. "docker exec elder-brain-bot claude"). It is split on
-    whitespace so we can sandwich the call through `docker exec` without
-    shell injection.
-
-    Returns parsed classification dict, or None on timeout / parse failure.
-    Caller should treat None as "couldn't classify; log + skip".
-
-    `template` selects the channel-specific prompt (PROMPT_TEMPLATE for Killers
-    VIP, INSIDERS_PROMPT_TEMPLATE for Dennis / Market Mastery).
+    Same subprocess contract as `classify` (see below), but returns
+    `(classification, error)` where exactly one is None. `error` is
+    `{"class": str, "detail": str}` with `detail` capped at 200 chars, so a
+    dropped message can be recorded and retried with a visible cause.
     """
     prompt = build_prompt(msg, reply_chain, template=template)
     cmd = binary.split() + ["-p", prompt, "--output-format", "json", "--print"]
@@ -244,15 +260,19 @@ async def classify(
             proc.kill()
             await proc.wait()
             logger.warning("classify timeout msg=%s after %.1fs", msg.get("id"), timeout_sec)
-            return None
+            return None, {"class": "timeout",
+                          "detail": f"timed out after {timeout_sec:.0f}s"}
     except FileNotFoundError:
         logger.error("classify: `%s` binary not found in PATH", binary)
-        return None
+        return None, {"class": "binary_missing",
+                      "detail": f"`{binary}` binary not found in PATH"}
 
     if proc.returncode != 0:
+        err_text = stderr.decode(errors="replace")
         logger.warning("classify nonzero exit msg=%s rc=%d stderr=%s",
-                       msg.get("id"), proc.returncode, stderr.decode()[:400])
-        return None
+                       msg.get("id"), proc.returncode, err_text[:400])
+        return None, {"class": error_class_from_text(err_text),
+                      "detail": err_text[:200]}
 
     raw = stdout.decode()
     # Claude CLI with --output-format json wraps the actual response in a meta envelope.
@@ -267,16 +287,52 @@ async def classify(
     if not m:
         logger.warning("classify: no JSON in response msg=%s response=%s",
                        msg.get("id"), response_text[:400])
-        return None
+        return None, {"class": "parse_fail",
+                      "detail": ("no JSON in response: "
+                                 + response_text)[:200]}
     try:
         result = json.loads(m.group(0))
     except json.JSONDecodeError as e:
         logger.warning("classify: JSON parse error msg=%s err=%s", msg.get("id"), e)
-        return None
+        return None, {"class": "parse_fail",
+                      "detail": f"JSON parse error: {e}"[:200]}
 
     # Sanity-check required fields
     if "kind" not in result:
         logger.warning("classify: missing 'kind' msg=%s", msg.get("id"))
-        return None
+        return None, {"class": "parse_fail",
+                      "detail": ("missing 'kind' in response: "
+                                 + response_text)[:200]}
     result["id"] = msg.get("id")
+    return result, None
+
+
+async def classify(
+    msg: dict,
+    reply_chain: list[dict],
+    *,
+    binary: str = "claude",
+    model: Optional[str] = None,
+    timeout_sec: float = 10.0,
+    template: str = PROMPT_TEMPLATE,
+) -> Optional[dict]:
+    """Spawn `claude -p PROMPT --output-format json --print` subprocess.
+
+    `binary` may be a single executable name OR a multi-word command
+    prefix (e.g. "docker exec elder-brain-bot claude"). It is split on
+    whitespace so we can sandwich the call through `docker exec` without
+    shell injection.
+
+    Returns parsed classification dict, or None on timeout / parse failure.
+    Caller should treat None as "couldn't classify; log + skip". Use
+    `classify_detailed` when the failure cause is needed (retry path).
+
+    `template` selects the channel-specific prompt (PROMPT_TEMPLATE for Killers
+    VIP, INSIDERS_PROMPT_TEMPLATE for Dennis / Market Mastery).
+    """
+    result, _error = await classify_detailed(
+        msg, reply_chain,
+        binary=binary, model=model, timeout_sec=timeout_sec,
+        template=template,
+    )
     return result

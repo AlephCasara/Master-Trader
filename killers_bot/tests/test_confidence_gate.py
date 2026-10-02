@@ -235,11 +235,17 @@ def env(monkeypatch):
         calls["claude"].append(msg["id"])
         return dict(copy.deepcopy(state["reply"]), id=msg["id"])
 
+    async def fake_detailed(msg, chain, **k):
+        # caminho principal usa classify_detailed; shadow continua em classify
+        cls = await fake_claude(msg, chain, **k)
+        return cls, None
+
     async def fake_post(url, msg, cls, token=""):
         calls["posted"].append((url, copy.deepcopy(msg), copy.deepcopy(cls), token))
 
     monkeypatch.setattr(observer, "build_reply_chain", fake_chain)
     monkeypatch.setattr(observer.classifier, "classify", fake_claude)
+    monkeypatch.setattr(observer.classifier, "classify_detailed", fake_detailed)
     monkeypatch.setattr(observer, "_post_to_receiver", fake_post)
     monkeypatch.setattr(observer.simulator, "update_paper_position",
                         lambda c, m, cls: calls["sim"].append(cls["kind"]))

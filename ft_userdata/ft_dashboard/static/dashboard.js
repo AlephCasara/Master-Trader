@@ -414,6 +414,29 @@ function dash() {
       }
 
 
+      // Classifier backend heartbeat: only a confirmed outage is reported —
+      // the last two or more consecutive probes failed. No probes yet means
+      // no statement (missing telemetry is not fabricated).
+      const cbHistory = (this.raw.classifier_backend?.history_24h) || [];
+      if (cbHistory.length >= 2
+          && !cbHistory[cbHistory.length - 1].ok
+          && !cbHistory[cbHistory.length - 2].ok) {
+        const lastOk = cbHistory.filter(p => p.ok).pop();
+        const lastOkAge = lastOk
+          ? this.fmtAge(Math.max(0, Math.floor(Date.now() / 1000 - lastOk.ts))) + ' ago'
+          : 'never';
+        items.push({
+          type: 'classifier-backend',
+          color: 'amber', icon: '!',
+          subject: 'classifier backend unreachable',
+          reason: `signal classification unavailable · last ok ${lastOkAge}`,
+          cta: 'view live',
+          logsHint: null,
+          action: () => { this.setTab('live'); },
+          detailTab: 'live',
+        });
+      }
+
       return items;
     },
     get observationNotices() {

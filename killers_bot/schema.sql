@@ -162,3 +162,21 @@ CREATE TABLE IF NOT EXISTS confidence_gate (
 
 CREATE INDEX IF NOT EXISTS idx_conf_gate_msg ON confidence_gate(msg_id, row_id);
 CREATE INDEX IF NOT EXISTS idx_conf_gate_verdict ON confidence_gate(verdict);
+
+-- ── Failed classifications (bd Master-Trader-fg0) ──────────────────────────
+-- One row per message whose classification failed. The observer retries with
+-- backoff; `state` walks pending → resolved (classified on retry) or pending →
+-- dropped (attempts exhausted). An outage of the classifier backend leaves a
+-- visible trail here instead of a silent gap in `classifications`.
+CREATE TABLE IF NOT EXISTS classify_failures (
+    msg_id          INTEGER PRIMARY KEY REFERENCES raw_messages(msg_id),
+    first_failed_at TEXT NOT NULL,
+    last_attempt_at TEXT NOT NULL,
+    attempts        INTEGER NOT NULL DEFAULT 0,
+    error_class     TEXT,                    -- binary_missing | timeout | dns_fail | connect_fail | http_429 | http_error | parse_fail | unknown
+    detail          TEXT,                    -- first 200 chars of the cause
+    state           TEXT NOT NULL DEFAULT 'pending',   -- pending / resolved / dropped
+    resolved_at     TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_classify_failures_state ON classify_failures(state);

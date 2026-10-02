@@ -108,11 +108,17 @@ def env(monkeypatch):
                 "direction": "long", "signal_id": 2143, "confidence": 0.9,
                 "notes": "", "pct": None}
 
+    async def fake_detailed(msg, chain, **k):
+        # caminho principal usa classify_detailed; shadow continua em classify
+        cls = await fake_claude(msg, chain, **k)
+        return cls, None
+
     async def fake_post(url, msg, cls, token=""):
         calls["posted"].append((msg["id"], cls["kind"], cls.get("symbol")))
 
     monkeypatch.setattr(observer, "build_reply_chain", fake_chain)
     monkeypatch.setattr(observer.classifier, "classify", fake_claude)
+    monkeypatch.setattr(observer.classifier, "classify_detailed", fake_detailed)
     monkeypatch.setattr(observer, "_post_to_receiver", fake_post)
     observer.record_signal_targets(conn, {"id": 1, "text": OPEN_8}, {"kind": "open"})
     yield conn, calls

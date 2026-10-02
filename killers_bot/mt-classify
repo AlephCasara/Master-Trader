@@ -13,6 +13,8 @@ comes from the environment so the same image works anywhere:
   MT_CLASSIFY_BEARER        Authorization bearer (optional)
   MT_CLASSIFY_TIMEOUT_SEC   transport timeout          (default 180)
   MT_CLASSIFY_DEFAULT_MODEL fallback when --model is absent (default qwen3-4b)
+  MT_CLASSIFY_FALLBACKS     JSON array of fallback candidates (see below)
+  MT_CLASSIFY_STATE         per-model daily quota state file
 
 On Zeabur the endpoint is the home tailnet funnel in front of llama-swap
 (bd dp1.5); locally it can point straight at 127.0.0.1:8080. Keeps the
@@ -20,12 +22,26 @@ verified behaviors from the 2026-10-01 baseline: response_format json_object
 (decode-time JSON validity), Qwen-family sampling map (greedy decode loops
 in qwen thinking), the reasoning_content fallback (thinking models that
 deliver nothing in content), and the close_full addendum.
+
+Fallback chain (verified design 2026-10-02, bd Master-Trader-yun): when the
+home box is off, MT_CLASSIFY_FALLBACKS lists candidates tried in order after
+the primary endpoint. Each entry is {"model": str (required), "endpoint":
+str (optional, defaults to the primary endpoint), "bearer_env": str (optional
+env var NAME holding that candidate's key; unset/empty falls back to the
+primary bearer), "rpd": int (optional daily budget; absent = unlimited),
+"response_format": bool (optional, default True — set false for candidates
+that reject json_object)}. --model still selects the PRIMARY's model only;
+fallback entries carry their own. Per-model daily quotas are tracked in the
+state file and reset at midnight America/Los_Angeles (the provider quota-day
+convention, dashboard-numbers.md §6).
 """
 import json
 import os
 import sys
 import urllib.error
 import urllib.request
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 MAX_TOKENS = 4096
 
@@ -34,6 +50,18 @@ MAX_TOKENS = 4096
 # until the token cap, leaving content empty (observed 2026-10-01). Qwen's
 # recommended thinking-mode sampling terminates cleanly.
 QWEN_FAMILY_PREFIXES = ("qwen", "claudecode-polar")
+
+PACIFIC = ZoneInfo("America/Los_Angeles")
+DEFAULT_STATE_PATH = "/var/lib/killers/mt-classify-state.json"
+FALLBACK_STATE_PATH = "/tmp/mt-classify-state.json"
+
+# Quota outcomes (bd Master-Trader-yun, 2026-10-02): only a completed HTTP
+# 200 call spends budget (success or not — the provider counted it); a 429
+# marks the model exhausted for the rest of the Pacific day; transport
+# failures spend nothing.
+OUTCOME_COMPLETED = "completed"
+OUTCOME_RATE_LIMITED = "rate_limited"
+OUTCOME_FAILED = "failed"
 
 
 def sampling_for(model: str) -> dict:
@@ -73,68 +101,168 @@ def extract_last_kind_json(text: str):
     return best
 
 
-def main() -> None:
-    endpoint = os.environ.get("MT_CLASSIFY_ENDPOINT", "")
-    bearer = os.environ.get("MT_CLASSIFY_BEARER", "")
-    timeout = float(os.environ.get("MT_CLASSIFY_TIMEOUT_SEC", "180"))
-    default_model = os.environ.get("MT_CLASSIFY_DEFAULT_MODEL", "qwen3-4b")
-    if not endpoint:
-        print("mt-classify: MT_CLASSIFY_ENDPOINT is not set", file=sys.stderr)
-        sys.exit(2)
+def pacific_today() -> str:
+    """Current date in America/Los_Angeles as YYYY-MM-DD — RPD quotas reset
+    at midnight Pacific (AI Studio quota day, confirmed 2026-10-02)."""
+    return datetime.now(PACIFIC).date().isoformat()
 
-    args = sys.argv[1:]
-    prompt = None
-    model = None
-    i = 0
-    while i < len(args):
-        if args[i] == "-p" and i + 1 < len(args):
-            prompt = args[i + 1]
-            i += 2
+
+def build_candidates(env, requested_model=None) -> list:
+    """Primary candidate (env endpoint, CLI/default model, no rpd limit)
+    followed by the MT_CLASSIFY_FALLBACKS entries in declared order."""
+    endpoint = env.get("MT_CLASSIFY_ENDPOINT", "")
+    bearer = env.get("MT_CLASSIFY_BEARER", "")
+    candidates = [{
+        "model": requested_model or env.get("MT_CLASSIFY_DEFAULT_MODEL",
+                                            "qwen3-4b"),
+        "endpoint": endpoint,
+        "bearer": bearer,
+        "rpd": None,
+        "response_format": True,
+        "primary": True,
+    }]
+
+    raw = env.get("MT_CLASSIFY_FALLBACKS", "")
+    if not raw:
+        return candidates
+    try:
+        entries = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        print(f"mt-classify: MT_CLASSIFY_FALLBACKS is not valid JSON, "
+              f"running primary-only: {exc}", file=sys.stderr)
+        return candidates
+    if not isinstance(entries, list):
+        print("mt-classify: MT_CLASSIFY_FALLBACKS is not a JSON array, "
+              "running primary-only", file=sys.stderr)
+        return candidates
+
+    for entry in entries:
+        if not isinstance(entry, dict) or not entry.get("model"):
+            print("mt-classify: skipping fallback entry without a model",
+                  file=sys.stderr)
             continue
-        if args[i] == "--model" and i + 1 < len(args):
-            model = args[i + 1]
-            i += 2
-            continue
-        i += 1  # --output-format json --print etc: claude-shaped, ignored
+        cand_bearer = bearer
+        bearer_env = entry.get("bearer_env")
+        if bearer_env and env.get(bearer_env, ""):
+            cand_bearer = env[bearer_env]
+        rpd = entry.get("rpd")
+        if not isinstance(rpd, int) or isinstance(rpd, bool):
+            rpd = None
+        candidates.append({
+            "model": entry["model"],
+            "endpoint": entry.get("endpoint") or endpoint,
+            "bearer": cand_bearer,
+            "rpd": rpd,
+            "response_format": bool(entry.get("response_format", True)),
+            "primary": False,
+        })
+    return candidates
 
-    if prompt is None:
-        print("mt-classify: missing -p prompt", file=sys.stderr)
-        sys.exit(2)
 
-    model = model or default_model
-    body = json.dumps({
+def resolve_state_path(env_path=None) -> str:
+    path = env_path or DEFAULT_STATE_PATH
+    parent = os.path.dirname(path) or "."
+    if os.path.isdir(parent) and os.access(parent, os.W_OK):
+        return path
+    return FALLBACK_STATE_PATH
+
+
+def load_state(path) -> dict:
+    """Quota rows for TODAY (Pacific) only — a row dated any other day is a
+    previous quota day and starts fresh (bd Master-Trader-yun, 2026-10-02)."""
+    try:
+        with open(path) as fh:
+            raw = json.load(fh)
+    except FileNotFoundError:
+        return {}
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"mt-classify: quota state unreadable, starting fresh: {exc}",
+              file=sys.stderr)
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    today = pacific_today()
+    return {model: row for model, row in raw.items()
+            if isinstance(row, dict) and row.get("date") == today}
+
+
+def save_state(path, state) -> None:
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w") as fh:
+            json.dump(state, fh)
+        os.replace(tmp, path)
+    except OSError as exc:
+        # Quota persistence is best-effort: never kill classification over it.
+        print(f"mt-classify: could not persist quota state to {path}: {exc}",
+              file=sys.stderr)
+
+
+def candidate_available(state, candidate) -> bool:
+    if candidate.get("primary"):
+        return True  # home endpoint: no quota, never skipped
+    row = state.get(candidate["model"])
+    if not isinstance(row, dict):
+        return True
+    if row.get("exhausted"):  # 429 earlier today: done for the day
+        return False
+    rpd = candidate.get("rpd")
+    return rpd is None or row.get("count", 0) < rpd
+
+
+def select_candidate(state, candidates):
+    """First candidate whose per-model daily budget isn't spent, or None."""
+    for candidate in candidates:
+        if candidate_available(state, candidate):
+            return candidate
+    return None
+
+
+def apply_outcome(state, model, outcome, today=None) -> None:
+    today = today or pacific_today()
+    row = state.get(model)
+    if not isinstance(row, dict) or row.get("date") != today:
+        row = {"date": today, "count": 0, "exhausted": False}
+        state[model] = row
+    if outcome == OUTCOME_COMPLETED:
+        row["count"] += 1
+    elif outcome == OUTCOME_RATE_LIMITED:
+        row["exhausted"] = True
+    # OUTCOME_FAILED: transport-level, no budget spent, row stays as-is.
+
+
+def request_candidate(candidate, prompt, timeout) -> str:
+    """One POST + parse against a single chain candidate. Returns the answer
+    text for stdout; HTTP/transport errors propagate to the chain loop."""
+    model = candidate["model"]
+    body = {
         "model": model,
         "messages": [{"role": "user", "content": prompt + ADDENDUM}],
         **sampling_for(model),
         "max_tokens": MAX_TOKENS,
         "stream": False,
-        # llama-server enforces a JSON grammar at decode time: the model
-        # physically cannot emit malformed JSON, which a small model
-        # occasionally does otherwise.
-        "response_format": {"type": "json_object"},
-    }).encode()
+    }
+    # llama-server enforces a JSON grammar at decode time: the model
+    # physically cannot emit malformed JSON, which a small model
+    # occasionally does otherwise. Candidates that reject json_object
+    # (chain entries with response_format=false) go without it.
+    if candidate.get("response_format", True):
+        body["response_format"] = {"type": "json_object"}
     headers = {"Content-Type": "application/json"}
-    if bearer:
-        headers["Authorization"] = f"Bearer {bearer}"
-    req = urllib.request.Request(endpoint, data=body, headers=headers)
+    if candidate.get("bearer"):
+        headers["Authorization"] = f"Bearer {candidate['bearer']}"
+    req = urllib.request.Request(candidate["endpoint"],
+                                 data=json.dumps(body).encode(),
+                                 headers=headers)
 
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            payload = json.load(resp)
-    except urllib.error.HTTPError as exc:
-        detail = exc.read()[:300]
-        print(f"mt-classify: HTTP {exc.code}: {detail!r}", file=sys.stderr)
-        sys.exit(1)
-    except Exception as exc:  # noqa: BLE001 - one boundary, reported + exit 1
-        print(f"mt-classify: {exc}", file=sys.stderr)
-        sys.exit(1)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        payload = json.load(resp)
 
     try:
         message = payload["choices"][0]["message"]
-    except (KeyError, IndexError):
-        print(f"mt-classify: unexpected payload {str(payload)[:300]}",
-              file=sys.stderr)
-        sys.exit(1)
+    except (KeyError, IndexError, TypeError):
+        raise ValueError(
+            f"unexpected payload {str(payload)[:300]}") from None
 
     content = (message.get("content") or "").strip()
     if not content:
@@ -158,8 +286,78 @@ def main() -> None:
         if first_newline != -1:
             text = text[first_newline + 1:]
         text = text.removesuffix("```").strip()
+    return text
 
-    sys.stdout.write(text + "\n")
+
+def main() -> None:
+    endpoint = os.environ.get("MT_CLASSIFY_ENDPOINT", "")
+    if not endpoint:
+        print("mt-classify: MT_CLASSIFY_ENDPOINT is not set", file=sys.stderr)
+        sys.exit(2)
+    timeout = float(os.environ.get("MT_CLASSIFY_TIMEOUT_SEC", "180"))
+
+    args = sys.argv[1:]
+    prompt = None
+    model = None
+    i = 0
+    while i < len(args):
+        if args[i] == "-p" and i + 1 < len(args):
+            prompt = args[i + 1]
+            i += 2
+            continue
+        if args[i] == "--model" and i + 1 < len(args):
+            model = args[i + 1]
+            i += 2
+            continue
+        i += 1  # --output-format json --print etc: claude-shaped, ignored
+
+    if prompt is None:
+        print("mt-classify: missing -p prompt", file=sys.stderr)
+        sys.exit(2)
+
+    candidates = build_candidates(os.environ, model)
+    state_path = resolve_state_path(os.environ.get("MT_CLASSIFY_STATE"))
+    state = load_state(state_path)
+
+    pending = list(candidates)
+    last_error = None
+    while pending:
+        candidate = select_candidate(state, pending)
+        if candidate is None:
+            break
+        # select_candidate returns the FIRST available entry, so slicing
+        # past its (equal-first) position advances the chain in order.
+        pending = pending[pending.index(candidate) + 1:]
+        name = candidate["model"]
+        try:
+            text = request_candidate(candidate, prompt, timeout)
+        except urllib.error.HTTPError as exc:
+            detail = exc.read()[:300]
+            last_error = f"mt-classify: HTTP {exc.code}: {detail!r}"
+            if exc.code == 429:
+                apply_outcome(state, name, OUTCOME_RATE_LIMITED)
+                save_state(state_path, state)
+                print(f"mt-classify: {name}: HTTP 429 — model marked "
+                      f"exhausted for today, trying next candidate",
+                      file=sys.stderr)
+            else:
+                # Other 4xx/5xx: a config problem on one candidate must not
+                # kill the chain (2026-10-02).
+                print(f"mt-classify: {name}: {last_error}", file=sys.stderr)
+            continue
+        except Exception as exc:  # noqa: BLE001 - chain boundary, next cand
+            last_error = f"mt-classify: {exc}"
+            print(f"mt-classify: {name}: {exc}", file=sys.stderr)
+            continue
+        apply_outcome(state, name, OUTCOME_COMPLETED)
+        save_state(state_path, state)
+        sys.stdout.write(text + "\n")
+        return
+
+    if last_error is None:
+        last_error = "mt-classify: every candidate is out of daily quota"
+    print(last_error, file=sys.stderr)
+    sys.exit(1)
 
 
 if __name__ == "__main__":
