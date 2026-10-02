@@ -404,20 +404,23 @@ def run_parameter_perturbation(
 
     Returns: {
         per_param: {param_name: {variants: [...], sensitivity, pct_change}},
-        overall: PASS/WARN/FAIL,
-        stability_score: int (0-100),
+        overall: PASS/WARN/FAIL, or SKIP when there is nothing to perturb,
+        stability_score: int (0-100), or None when SKIP,
         total_backtests_run: int,
     }
     """
     numeric_params = _extract_numeric_params(base_params)
 
     if not numeric_params:
+        # Nothing was perturbed, so nothing was assessed: report SKIP with no
+        # score rather than a PASS/100 that would carry the combined verdict.
         log.warning("No numeric parameters found to perturb for %s", strategy_name)
         return {
             "per_param": {},
-            "overall": "PASS",
-            "stability_score": 100,
+            "overall": "SKIP",
+            "stability_score": None,
             "total_backtests_run": 0,
+            "reason": "no numeric parameters to perturb",
         }
 
     log.info(
@@ -598,6 +601,16 @@ def run_robustness_stage(
         perturb_pcts (list[int]): [] = skip parameter perturbation
 
     Returns combined results from MC shuffle + perturbation.
+
+    Each half also records why it has no result, so downstream verdicts can
+    tell a measurement that was deliberately not requested (advisory) from
+    one that was requested but did not happen (blocks permissive verdicts):
+        mc_skip_reason:           None (ran), "disabled" (mc_iterations == 0),
+                                  "no_trades" (requested, but no trades to shuffle)
+        perturbation_skip_reason: None (ran and produced a score),
+                                  "disabled" (perturb_pcts empty), or the
+                                  perturbation's own SKIP reason (e.g. no numeric
+                                  parameters to perturb)
     """
     log.info("=" * 60)
     log.info("Stage 5: Robustness Validation for %s", strategy_name)
@@ -609,6 +622,8 @@ def run_robustness_stage(
         "perturbation": None,
         "combined_score": 0,
         "combined_verdict": "SKIP",
+        "mc_skip_reason": None,
+        "perturbation_skip_reason": None,
     }
 
     mc_iterations = mode_config.get("mc_iterations", 0)
@@ -626,8 +641,10 @@ def run_robustness_stage(
         results["monte_carlo"] = mc_result
     elif mc_iterations > 0:
         log.warning("MC requested but no trades provided — skipping")
+        results["mc_skip_reason"] = "no_trades"
     else:
         log.info("Monte Carlo shuffle skipped (mc_iterations=0)")
+        results["mc_skip_reason"] = "disabled"
 
     # 5b: Parameter Perturbation
     if perturb_pcts:
@@ -640,8 +657,13 @@ def run_robustness_stage(
             perturb_pcts=perturb_pcts,
         )
         results["perturbation"] = perturb_result
+        if perturb_result.get("overall") == "SKIP":
+            results["perturbation_skip_reason"] = (
+                perturb_result.get("reason") or "perturbation skipped"
+            )
     else:
         log.info("Parameter perturbation skipped (perturb_pcts=[])")
+        results["perturbation_skip_reason"] = "disabled"
 
     # Combined scoring
     mc_score = results["monte_carlo"]["mc_score"] if results["monte_carlo"] else None

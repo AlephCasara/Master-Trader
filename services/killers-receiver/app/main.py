@@ -175,6 +175,10 @@ class Config:
         self.notify_url = os.environ.get(
             "KILLERS_NOTIFY_URL", "http://trade-webhook:8088/test/notify"
         )
+        # Shared secret trade-webhook requires on /test/notify once it sets
+        # TRADE_WEBHOOK_NOTIFY_TOKEN (#59). Sent as X-Notify-Token only when
+        # set here; unset keeps the legacy unauthenticated POST. Never logged.
+        self.notify_token = os.environ.get("TRADE_WEBHOOK_NOTIFY_TOKEN", "").strip()
         # Max acceptable slippage from the signal's entry boundary, as
         # percent. LONG: skip if mark > entry_hi * (1 + pct/100).
         # SHORT: skip if mark < entry_lo * (1 - pct/100).
@@ -531,6 +535,29 @@ CREATE TABLE IF NOT EXISTS ingress_events (
 CREATE INDEX IF NOT EXISTS idx_ingress_kind ON ingress_events(kind);
 CREATE INDEX IF NOT EXISTS idx_ingress_action ON ingress_events(final_action);
 
+CREATE TABLE IF NOT EXISTS ingress_revisions (
+    -- Append-only: ONE row per /event delivery (#64). `ingress_events` keeps
+    -- the FIRST payload per msg_id (INSERT OR IGNORE) but its final_* columns
+    -- are overwritten by every later delivery, so after an edit (e.g. chat ->
+    -- open) that row pairs the old input with the new outcome. Use THIS table
+    -- to pair each delivery's input with its own outcome; `ingress_events` is
+    -- left unchanged for existing readers (/ingress, reprocess_ingress).
+    -- Identical redeliveries (observer retry/backfill) also get a row: each
+    -- is a real delivery. Audit only: nothing here gates execution.
+    rev_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    msg_id        INTEGER NOT NULL,
+    received_at   TEXT NOT NULL,
+    msg_edit_date TEXT,                      -- payload.msg.edit_date, if any
+    kind          TEXT,
+    symbol        TEXT,
+    signal_id     INTEGER,
+    raw_payload   TEXT NOT NULL,             -- full {msg, classification} json
+    final_action  TEXT,                      -- this delivery's own outcome
+    final_status  INTEGER,                   -- NULL if the handler died
+    completed_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_ingress_rev_msg ON ingress_revisions(msg_id, rev_id);
+
 CREATE TABLE IF NOT EXISTS target_orders (
     -- Phase 2: active limit-order placement at each signal TP.
     -- Set-and-forget on open: parse TARGETS line → place LIMIT exit at
@@ -683,6 +710,66 @@ def find_active_position(
     if len(rows) > 1:
         return None, "ambiguous"
     return None, "no_match"
+
+
+def _prior_action_kind_for_msg(conn: sqlite3.Connection, pos: dict,
+                               msg_id, kind: str) -> Optional[str]:
+    """#64: at most ONE executing action per (position, source message).
+
+    An edited Telegram message is re-forwarded with a fresh classification,
+    so UNIQUE(pos_id, msg_id, kind) alone lets one message act twice on the
+    same position if its kind changes between edits. Returns the kind that
+    message already acted as on this position (so the caller must NOT
+    execute), or None.
+
+    Every `events` row is an executed or claimed action (only the open,
+    close_* and signal_update paths insert; chat/skipped/logged write none),
+    so any row counts. The position's own open message also counts even
+    before its 'open' row lands (that row is written after the FT await).
+
+    A same-kind redelivery returns None so the caller's existing
+    INSERT OR IGNORE dedupe path handles it unchanged. Synchronous — callers
+    must run this and their claim INSERT with no await in between.
+    """
+    kinds = [r[0] for r in conn.execute(
+        "SELECT kind FROM events WHERE pos_id = ? AND msg_id = ? "
+        "ORDER BY event_id",
+        (pos["pos_id"], msg_id),
+    ).fetchall()]
+    if kind in kinds:
+        return None
+    if kinds:
+        return kinds[0]
+    if pos.get("open_msg_id") is not None and pos.get("open_msg_id") == msg_id:
+        return "open"
+    return None
+
+
+def _open_edit_refusal(conn: sqlite3.Connection, msg_id, kind: str) -> Optional[dict]:
+    """#64 for the open path: a message that already acted as a close or
+    update on some position and is edited into `open` must not open a new
+    position. chat writes no events rows, so a chat -> open edit still opens
+    once; an `open` row for this msg is left to the open_msg_id dedupe."""
+    prior = conn.execute(
+        "SELECT pos_id, kind FROM events WHERE msg_id = ? AND kind != 'open' "
+        "ORDER BY event_id LIMIT 1",
+        (msg_id,),
+    ).fetchone()
+    if prior is None:
+        return None
+    return _kind_change_deduped({"pos_id": prior["pos_id"]}, msg_id, kind,
+                                prior["kind"])
+
+
+def _kind_change_deduped(pos: dict, msg_id, kind: str, prior_kind: str) -> dict:
+    logger.warning(
+        "[EDIT KIND-CHANGE IGNORED] msg_id=%s pos_id=%d already acted as %s; "
+        "edited delivery as %s NOT executed", msg_id, pos["pos_id"],
+        prior_kind, kind)
+    return {"action": "deduped",
+            "reason": (f"msg already acted as {prior_kind} on this position "
+                       f"(edited message, kind changed to {kind})"),
+            "pos_id": pos["pos_id"], "kind": kind, "prior_kind": prior_kind}
 
 
 # ── Sizing ─────────────────────────────────────────────────────────────────
@@ -1101,14 +1188,15 @@ async def _place_target_limits_inner(
         if trade_snapshot is None:
             return []  # delayed-fill reconciliation will retry the read
         try:
-            position = conn.execute("SELECT tp_policy FROM positions WHERE pos_id=?", (pos_id,)).fetchone()
+            position = conn.execute("SELECT tp_policy, sl_abs FROM positions WHERE pos_id=?", (pos_id,)).fetchone()
             frozen_policy = json.loads(position["tp_policy"]) if position and position["tp_policy"] else None
             if frozen_policy:
                 plan = (nearby_allocations(trade_snapshot, frozen_policy)
                         if frozen_policy.get("mode") == "nearest_source"
                         else executable_source_targets(trade_snapshot, frozen_policy))
             else:
-                plan = executable_targets(trade_snapshot, targets, min_notional=10)
+                plan = executable_targets(trade_snapshot, targets, min_notional=10,
+                                          planned_stop=position["sl_abs"] if position else None)
         except (ValueError, ArithmeticError, TypeError) as exc:
             planning_error = str(exc)
             if frozen_policy:
@@ -1784,6 +1872,13 @@ async def target_orders_reconcile_loop(cfg: Config, conn: sqlite3.Connection,
         await asyncio.sleep(cfg.target_reconcile_sec)
 
 
+# A 'requested' position with no Freqtrade trade on its (pair, side) after
+# this long is an orphan from a /forceenter transport failure (#82) and is
+# expired to 'failed' by the reconcile loop. Far above the 10s forceenter
+# timeout so an in-flight request is never expired.
+REQUESTED_ORPHAN_TTL_SEC = 600  # 10 min
+
+
 async def _reconcile_loop_once(cfg: Config, conn: sqlite3.Connection,
                                session=None) -> str:
     """One position-level reconcile tick. Returns 'skipped' when FT was
@@ -1820,6 +1915,43 @@ async def _reconcile_loop_once(cfg: Config, conn: sqlite3.Connection,
             )
             logger.info("[RECONCILE] orphan pos_id=%d linked to ft_trade_id=%d",
                         pos["pos_id"], ft["trade_id"])
+
+    # (1b) expire orphans that never reached Freqtrade (#82). A transport
+    # exception on /forceenter leaves the row 'requested' forever, where it
+    # counts in the active-position gate. Only reached with a genuine FT
+    # response (the `is None` guard above), and only for rows still
+    # unlinked after step (1) with no FT trade on their (pair, side). FT
+    # lists a trade in /status as soon as the entry order is placed (even
+    # unfilled), so an accepted-but-unacknowledged forceenter is linked,
+    # not expired. Age is measured from the receiver's insert time
+    # (last_event_at), not the channel msg date.
+    now_dt = datetime.now(timezone.utc)
+    for pos in conn.execute(
+        "SELECT pos_id, pair, direction, open_date, last_event_at FROM positions "
+        "WHERE state = 'requested' AND ft_trade_id IS NULL"
+    ).fetchall():
+        if (pos["pair"], pos["direction"] == "short") in ft_by_pair:
+            continue
+        try:
+            born = datetime.fromisoformat(pos["last_event_at"] or pos["open_date"])
+        except (TypeError, ValueError):
+            continue  # unknown age: never expire
+        if born.tzinfo is None:
+            born = born.replace(tzinfo=timezone.utc)
+        age = (now_dt - born).total_seconds()
+        if age < REQUESTED_ORPHAN_TTL_SEC:
+            continue
+        now_iso = now_dt.isoformat()
+        conn.execute(
+            "UPDATE positions SET state = 'failed', "
+            "close_reason = 'requested_expired_no_ft_trade', close_date = ?, "
+            "last_event_at = ? WHERE pos_id = ? AND state = 'requested' "
+            "AND ft_trade_id IS NULL",
+            (now_iso, now_iso, pos["pos_id"]),
+        )
+        logger.warning("[RECONCILE] orphan pos_id=%d %s %s requested %.0fs ago with "
+                       "no FT trade; marked failed (requested_expired_no_ft_trade)",
+                       pos["pos_id"], pos["pair"], pos["direction"], age)
 
     # (2) detect closes we missed. Only safe when ft_open is a genuine
     # response (handled above by the `is None` guard).
@@ -2351,6 +2483,22 @@ _notified_msg_ids: dict = {}
 _NOTIFIED_CAP = 5000
 
 
+def _notify_headers(cfg: Config) -> Optional[dict]:
+    """X-Notify-Token for trade-webhook's /test/notify, only when configured."""
+    token = getattr(cfg, "notify_token", "")
+    return {"X-Notify-Token": token} if token else None
+
+
+def _warn_notify_rejected(status: int) -> None:
+    # A 401 means trade-webhook enforces a token this receiver lacks or has
+    # wrong; surface it instead of silently losing every alert. No token logged.
+    if status == 401:
+        logger.warning(
+            "telegram notify rejected (401): TRADE_WEBHOOK_NOTIFY_TOKEN missing "
+            "or different from trade-webhook's"
+        )
+
+
 async def _notify_telegram(cfg: Config, text: str, session=None) -> None:
     """Best-effort POST to trade-webhook /test/notify → @elder_brain_bot.
     Silent on failure; observability shouldn't block the signal pipeline.
@@ -2364,16 +2512,19 @@ async def _notify_telegram(cfg: Config, text: str, session=None) -> None:
         return
     timeout = aiohttp.ClientTimeout(total=5)
     payload = {"text": text}
+    headers = _notify_headers(cfg)
     try:
         if session is not None:
             async with session.post(cfg.notify_url, json=payload,
-                                    timeout=timeout) as r:
+                                    headers=headers, timeout=timeout) as r:
                 # Read body to release connection cleanly. Don't care about content.
                 await r.read()
+                _warn_notify_rejected(r.status)
             return
         async with aiohttp.ClientSession(timeout=timeout) as s:
-            async with s.post(cfg.notify_url, json=payload) as r:
+            async with s.post(cfg.notify_url, json=payload, headers=headers) as r:
                 await r.read()
+                _warn_notify_rejected(r.status)
     except Exception as e:
         logger.warning("telegram notify failed: %s", e)
 
@@ -2394,11 +2545,17 @@ def _format_event_summary(cfg: Config, payload: EventPayload, result: dict) -> O
     # Chat is 60% of the corpus — filter to keep Telegram readable.
     if kind == "chat" or action == "ignored":
         return None
+    head = f"[{cfg.bot_label}]"
+    # #64: an edit that changed the kind of a message that already acted is
+    # NOT executed — surface it, the operator may need to act by hand.
+    if action == "deduped" and result.get("prior_kind"):
+        return (f"⚠ {head} EDIT IGNORED · #{sig} {kind} {sym}  · "
+                f"pos={result.get('pos_id', '?')} · msg already acted as "
+                f"{result['prior_kind']}")
     # Duplicate observer redelivery: already alerted on the first pass.
     if action == "deduped":
         return None
 
-    head = f"[{cfg.bot_label}]"
     if action == "force_enter":
         pos = result.get("pos_id", "?")
         ft  = (result.get("ft") or {}).get("status", "?")
@@ -2473,6 +2630,8 @@ async def handle_event(payload: EventPayload):
     # 2026-05-27 bug: msg 3471 hit a NameError and left zero audit because
     # the only event-recording code path ran AFTER processing decisions.
     ingress_id = _ingress_log_start(conn, payload)
+    # Per-delivery audit (#64): pairs THIS delivery's input with its outcome.
+    revision_id = _ingress_revision_start(conn, payload)
 
     try:
         if payload.classification.get("kind") == "open":
@@ -2491,14 +2650,22 @@ async def handle_event(payload: EventPayload):
                          msg_id, kind, e)
         _ingress_log_finish(conn, ingress_id,
                              {"action": "error", "reason": str(e)}, 500)
+        _ingress_revision_finish(conn, revision_id,
+                                 {"action": "error", "reason": str(e)}, 500)
         raise HTTPException(status_code=500,
                             detail={"error": str(e), "msg_id": msg_id,
                                     "kind": kind})
 
     _ingress_log_finish(conn, ingress_id, result, 200)
+    _ingress_revision_finish(conn, revision_id, result, 200)
 
     text = _format_event_summary(cfg, payload, result)
     _dedup_msg_id = payload.msg.get("id") if isinstance(payload.msg, dict) else None
+    if _dedup_msg_id is not None and isinstance(result, dict) and result.get("prior_kind"):
+        # An ignored edit (#64) is a new fact about an already-alerted msg:
+        # key it separately so the first alert does not suppress it, while a
+        # redelivery of the same edit still stays quiet.
+        _dedup_msg_id = (_dedup_msg_id, "edit_ignored", result.get("kind"))
     if text and _dedup_msg_id is not None and _dedup_msg_id in _notified_msg_ids:
         # Observer redelivery of the same message — already alerted; suppress repeat.
         text = None
@@ -2561,7 +2728,9 @@ def _ingress_log_start(conn: sqlite3.Connection,
 
 def _ingress_log_finish(conn: sqlite3.Connection, ingress_id: Optional[int],
                         result: dict, status: int) -> None:
-    """Stamp the handler outcome onto the ingress row."""
+    """Stamp the handler outcome onto the ingress row. The LATEST delivery's
+    outcome wins here while raw_payload keeps the FIRST; ingress_revisions
+    holds the correctly paired per-delivery record (#64)."""
     if ingress_id is None:
         return
     try:
@@ -2573,6 +2742,52 @@ def _ingress_log_finish(conn: sqlite3.Connection, ingress_id: Optional[int],
         )
     except Exception as e:
         logger.warning("ingress_log_finish failed: %s", e)
+
+
+def _ingress_revision_start(conn: sqlite3.Connection,
+                            payload: EventPayload) -> Optional[int]:
+    """Append one ingress_revisions row for this delivery (#64). Unlike
+    ingress_events there is no dedupe: every delivery, edited or not, gets
+    its own row. Audit failure never breaks the handler."""
+    try:
+        msg = payload.msg if isinstance(payload.msg, dict) else {}
+        cls = payload.classification if isinstance(payload.classification, dict) else {}
+        msg_id = msg.get("id")
+        if msg_id is None:
+            return None  # malformed payload, can't audit
+        edit_date = msg.get("edit_date")
+        cur = conn.execute(
+            "INSERT INTO ingress_revisions "
+            "(msg_id, received_at, msg_edit_date, kind, symbol, signal_id, raw_payload) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (msg_id,
+             datetime.now(timezone.utc).isoformat(),
+             str(edit_date) if edit_date is not None else None,
+             cls.get("kind"),
+             cls.get("symbol"),
+             cls.get("signal_id"),
+             json.dumps({"msg": msg, "classification": cls}, default=str)),
+        )
+        return cur.lastrowid
+    except Exception as e:
+        logger.exception("ingress_revision_start failed: %s", e)
+        return None
+
+
+def _ingress_revision_finish(conn: sqlite3.Connection, revision_id: Optional[int],
+                             result: dict, status: int) -> None:
+    """Stamp this delivery's own outcome onto its revision row."""
+    if revision_id is None:
+        return
+    try:
+        action = result.get("action") if isinstance(result, dict) else None
+        conn.execute(
+            "UPDATE ingress_revisions SET final_action=?, final_status=?, completed_at=? "
+            "WHERE rev_id=?",
+            (action, status, datetime.now(timezone.utc).isoformat(), revision_id),
+        )
+    except Exception as e:
+        logger.warning("ingress_revision_finish failed: %s", e)
 
 
 async def _process_event(payload: EventPayload):
@@ -2601,6 +2816,11 @@ async def _process_event_inner(payload: EventPayload, phase2_locked=False):
         return {"action": "ignored", "reason": "chat"}
 
     if kind == "open":
+        # #64: checked here to skip the pricing work, and again right before
+        # the position INSERT (no await between that check and the INSERT).
+        edited = _open_edit_refusal(conn, msg_id, kind)
+        if edited is not None:
+            return edited
         if not symbol or not cls.get("direction"):
             return {"action": "skipped", "reason": "missing symbol or direction"}
         pair = to_freqtrade_pair(symbol)
@@ -2881,6 +3101,13 @@ async def _process_event_inner(payload: EventPayload, phase2_locked=False):
         # spine even if the call fails. UNIQUE constraint on open_msg_id makes
         # this idempotent — duplicate event delivery returns the existing row.
         targets_json = json.dumps(remaining_targets) if remaining_targets else None
+        # #64: a message that already acted (close/update on some position)
+        # and is edited into `open` must not open a new position. Checked with
+        # no await before the INSERT below. chat writes no events rows, so a
+        # chat -> open edit still opens once.
+        edited = _open_edit_refusal(conn, msg_id, kind)
+        if edited is not None:
+            return edited
         try:
             cur = conn.execute(
                 "INSERT INTO positions (signal_id, symbol, pair, direction, state, "
@@ -3030,6 +3257,10 @@ async def _process_event_inner(payload: EventPayload, phase2_locked=False):
             "pct_remaining_before": pct_remaining_before,
             "pending": True,
         })
+        # #64: no await between this check and the claim below.
+        prior_kind = _prior_action_kind_for_msg(conn, pos, msg_id, kind)
+        if prior_kind is not None:
+            return _kind_change_deduped(pos, msg_id, kind, prior_kind)
         claim = conn.execute(
             "INSERT OR IGNORE INTO events "
             "(pos_id, msg_id, event_at, kind, payload, response) "
@@ -3280,6 +3511,10 @@ async def _process_event_inner(payload: EventPayload, phase2_locked=False):
             "instruction": instruction,
             "pending": True,
         })
+        # #64: no await between this check and the claim below.
+        prior_kind = _prior_action_kind_for_msg(conn, pos, msg_id, kind)
+        if prior_kind is not None:
+            return _kind_change_deduped(pos, msg_id, kind, prior_kind)
         claim = conn.execute(
             "INSERT OR IGNORE INTO events "
             "(pos_id, msg_id, event_at, kind, payload, response) "

@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from . import classifier, rules_classifier, simulator, strict_open
+from . import classifier, confidence_gate, rules_classifier, simulator, strict_open
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +82,15 @@ class Config:
         # is Killers-only, so it's disabled for insiders).
         self.classifier_template = classifier.PROMPT_TEMPLATE
         self.use_fast_path = True
+        # Gate de confianca em SHADOW (#65): so grava o veredito, nunca
+        # bloqueia. Um gate que so observa nao pode derrubar o encaminhamento:
+        # arquivo malformado vira shadow sem limiares + ERROR (o CI valida o
+        # arquivo versionado); arquivo ausente idem, com WARNING.
+        try:
+            self.confidence_gate = confidence_gate.load_config()
+        except confidence_gate.GateConfigError as e:
+            logger.error("[CONF-GATE] config invalida, gate DESLIGADO: %s", e)
+            self.confidence_gate = confidence_gate.disabled_config()
 
 
 def _required(name: str) -> str:
@@ -108,21 +117,52 @@ def last_msg_id(conn: sqlite3.Connection) -> Optional[int]:
     return row[0] if row and row[0] else None
 
 
+_RAW_COLS = "(msg_id, received_at, posted_at, edited_at, reply_to_msg_id, text, raw_json)"
+_CLS_COLS = ("(msg_id, classified_at, kind, signal_id, symbol, direction, "
+             " entry_lo, entry_hi, sl, sl_str, tp, pct, confidence, notes, raw_json)")
+
+
+def _append_revision(conn: sqlite3.Connection, table: str, cols: str,
+                     row: tuple) -> None:
+    """Trilha de auditoria append-only (#64). A tabela principal guarda so a
+    versao mais recente (INSERT OR REPLACE); aqui fica cada versao. Falha na
+    auditoria e engolida — nunca pode derrubar a ingestao.
+
+    O SAVEPOINT isola a falha: desfaz so a revisao, nao a escrita principal
+    da mesma transacao. Se o SQLite ja abortou a transacao inteira (disco
+    cheio, I/O), a escrita principal se perdeu e o erro sobe em vez de um
+    commit vazio fingir sucesso."""
+    conn.execute("SAVEPOINT audit_revision")
+    try:
+        conn.execute(
+            f"INSERT INTO {table} {cols} VALUES ({', '.join('?' * len(row))})",
+            row,
+        )
+        conn.execute("RELEASE audit_revision")
+    except Exception:
+        if not conn.in_transaction:
+            raise
+        conn.execute("ROLLBACK TO audit_revision")
+        conn.execute("RELEASE audit_revision")
+        logger.exception("[AUDIT] %s falhou msg_id=%s — ignorado", table, row[0])
+
+
 def persist_raw(conn: sqlite3.Connection, msg: dict) -> None:
-    conn.execute(
-        "INSERT OR REPLACE INTO raw_messages "
-        "(msg_id, received_at, posted_at, edited_at, reply_to_msg_id, text, raw_json) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (
-            msg["id"],
-            datetime.now(timezone.utc).isoformat(),
-            str(msg.get("date")) if msg.get("date") else None,
-            str(msg.get("edit_date")) if msg.get("edit_date") else None,
-            msg.get("reply_to_msg_id"),
-            msg.get("message") or msg.get("text"),
-            json.dumps(msg, default=str),
-        ),
+    row = (
+        msg["id"],
+        datetime.now(timezone.utc).isoformat(),
+        str(msg.get("date")) if msg.get("date") else None,
+        str(msg.get("edit_date")) if msg.get("edit_date") else None,
+        msg.get("reply_to_msg_id"),
+        msg.get("message") or msg.get("text"),
+        json.dumps(msg, default=str),
     )
+    conn.execute(
+        f"INSERT OR REPLACE INTO raw_messages {_RAW_COLS} "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        row,
+    )
+    _append_revision(conn, "raw_message_revisions", _RAW_COLS, row)
     conn.commit()
 
 
@@ -134,27 +174,27 @@ def persist_classification(conn: sqlite3.Connection, classification: dict) -> No
     sl_num = sl_val if isinstance(sl_val, (int, float)) else None
     sl_str = sl_val if isinstance(sl_val, str) else None
 
-    conn.execute(
-        "INSERT OR REPLACE INTO classifications "
-        "(msg_id, classified_at, kind, signal_id, symbol, direction, "
-        " entry_lo, entry_hi, sl, sl_str, tp, pct, confidence, notes, raw_json) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (
-            classification["id"],
-            datetime.now(timezone.utc).isoformat(),
-            classification.get("kind"),
-            classification.get("signal_id"),
-            classification.get("symbol"),
-            classification.get("direction"),
-            entry_range[0], entry_range[1],
-            sl_num, sl_str,
-            classification.get("tp"),
-            classification.get("pct"),
-            classification.get("confidence"),
-            (classification.get("notes") or "")[:1000],
-            json.dumps(classification, default=str),
-        ),
+    row = (
+        classification["id"],
+        datetime.now(timezone.utc).isoformat(),
+        classification.get("kind"),
+        classification.get("signal_id"),
+        classification.get("symbol"),
+        classification.get("direction"),
+        entry_range[0], entry_range[1],
+        sl_num, sl_str,
+        classification.get("tp"),
+        classification.get("pct"),
+        classification.get("confidence"),
+        (classification.get("notes") or "")[:1000],
+        json.dumps(classification, default=str),
     )
+    conn.execute(
+        f"INSERT OR REPLACE INTO classifications {_CLS_COLS} "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        row,
+    )
+    _append_revision(conn, "classification_revisions", _CLS_COLS, row)
     conn.commit()
 
 
@@ -264,6 +304,46 @@ def shadow_rules(conn: sqlite3.Connection, msg: dict, classification: dict,
             pass
         logger.exception("[RULE-SHADOW] falhou id=%s — ignorado", msg.get("id"))
 
+
+# ── Gate de confianca em SHADOW (#65) ──────────────────────────────────────
+
+
+def record_confidence_gate(conn: sqlite3.Connection, msg: dict,
+                           classification: dict, source: str,
+                           gate_cfg: "confidence_gate.GateConfig") -> None:
+    """Calcula e GRAVA o veredito do gate. Nunca bloqueia, nunca levanta.
+
+    Chamado so para classificacoes do Claude, ANTES de persistir/simular/
+    encaminhar — o lugar onde um gate de verdade teria de agir. Em shadow o
+    retorno e sempre None e o chamador segue exatamente como antes. Mesmo
+    padrao de `shadow_rules`: falha e engolida com rollback da conexao
+    compartilhada."""
+    try:
+        v = confidence_gate.evaluate(gate_cfg, classification)
+        conn.execute(
+            "INSERT INTO confidence_gate (msg_id, evaluated_at, kind, source, "
+            "confidence, threshold, verdict, reason, mode, config_schema_version) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (msg["id"], datetime.now(timezone.utc).isoformat(), v.kind, source,
+             v.confidence, v.threshold, v.verdict, v.reason, gate_cfg.mode,
+             gate_cfg.schema_version),
+        )
+        conn.commit()
+        if v.verdict == confidence_gate.WOULD_BLOCK:
+            logger.warning(
+                "[CONF-GATE WOULD_BLOCK] id=%s kind=%s conf=%s limiar=%s (%s) — "
+                "shadow: encaminhado mesmo assim",
+                msg.get("id"), v.kind, v.confidence, v.threshold, v.reason)
+        else:
+            logger.info("[CONF-GATE] id=%s kind=%s %s (%s)", msg.get("id"),
+                        v.kind, v.verdict, v.reason)
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        logger.exception("[CONF-GATE] falhou id=%s — ignorado", msg.get("id"))
+
 # ── Reply chain (small, in-memory cache + DB fallback) ─────────────────────
 
 
@@ -351,6 +431,13 @@ async def process_message(client, channel_id, conn, config, msg_dict: dict, sour
     if classification is None:
         logger.warning("[CLASSIFY FAIL] id=%d skipping downstream", msg_dict["id"])
         return
+
+    # Gate de confianca em SHADOW (#65): so para o que o Claude decidiu. As
+    # regras sao deterministicas (confidence fixo em 1.0) e nao sao avaliadas.
+    # Grava o veredito e segue — o encaminhamento abaixo NAO depende dele.
+    gate_cfg = getattr(config, "confidence_gate", None)
+    if source_label == "claude" and gate_cfg is not None:
+        record_confidence_gate(conn, msg_dict, classification, source_label, gate_cfg)
 
     persist_classification(conn, classification)
     kind = classification.get("kind")

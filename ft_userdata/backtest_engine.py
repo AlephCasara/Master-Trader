@@ -166,6 +166,33 @@ def _load_latest_results() -> Optional[dict]:
     return None
 
 
+def _stamp_stages_requested(results: dict) -> dict:
+    """Copy meta.stages_requested onto each strategy's results.
+
+    classify_recommendation only sees one strategy's results, and treats a
+    missing calibration/robustness measurement as advisory only when that
+    stamp shows the stage was not requested. Also applied when reloading a
+    saved run for --report, so older pipeline_results.json files (which
+    recorded meta.stages_requested but no per-strategy stamp) are judged by
+    the stages that run actually requested. A strategy that already carries
+    a stamp is left alone.
+    """
+    meta = results.get("meta") or {}
+    requested = meta.get("stages_requested")
+    mode = meta.get("mode")
+    for strat_results in (results.get("strategies") or {}).values():
+        if not isinstance(strat_results, dict):
+            continue
+        if isinstance(requested, list):
+            strat_results.setdefault("stages_requested", list(requested))
+        # Lets classify_recommendation recognise a legacy robustness artifact
+        # (written before mc_skip_reason existed) from a mode whose
+        # mc_iterations is 0 as deliberately disabled rather than missing.
+        if isinstance(mode, str):
+            strat_results.setdefault("run_mode", mode)
+    return results
+
+
 def _is_stage_available(stage: str) -> bool:
     """Check if a stage's module is imported and available."""
     mapping = {
@@ -177,6 +204,28 @@ def _is_stage_available(stage: str) -> bool:
         "reporting": run_reporting_stage,
     }
     return mapping.get(stage) is not None
+
+
+def _viability_trades(via_data: dict) -> list[dict]:
+    """Read the viability backtest's trades back from the results file it recorded."""
+    metrics = via_data.get("metrics") or {}
+    result_file = metrics.get("_result_file")
+    bt_strategy = metrics.get("_bt_strategy")
+    if not result_file or not bt_strategy or not Path(result_file).is_file():
+        return []
+
+    from engine.calibration import _load_backtest_trades
+    return _load_backtest_trades(result_file, bt_strategy)
+
+
+def _consensus_base_params(wf_data: dict) -> dict:
+    """Consensus params from a walk-forward result, or {} when there are none.
+
+    Walk-forward writes `consensus_params: None` when no consensus is reached,
+    and `.get(key, {})` returns that None, so null has to resolve to {} here.
+    """
+    consensus = (wf_data or {}).get("consensus") or {}
+    return consensus.get("consensus_params") or {}
 
 
 def _print_registry_table() -> None:
@@ -355,6 +404,10 @@ def run_pipeline(
         "strategies": {name: {} for name in strat_names},
         "stage_durations": {},
     }
+    # Per-strategy copy of the requested stages, so classify_recommendation
+    # can tell a stage deliberately left out (advisory) from one that was
+    # requested but produced no measurement (blocks OPTIMIZE/KEEP).
+    _stamp_stages_requested(results)
 
     # Track which strategies are dead (skip expensive stages for them)
     dead_strategies: set[str] = set()
@@ -648,11 +701,10 @@ def run_pipeline(
                         pairs = futures_pairs if strat_cfg["trading_mode"] == "futures" else spot_pairs
                     # Get consensus params from walk-forward results
                     wf_data = results["strategies"][strat_name].get("walk_forward", {})
-                    consensus = wf_data.get("consensus", {})
-                    base_params = consensus.get("consensus_params", {})
+                    base_params = _consensus_base_params(wf_data)
                     # Collect trades from viability backtest for MC shuffle
                     via_data = results["strategies"][strat_name].get("viability", {})
-                    trades = via_data.get("_trades", [])
+                    trades = _viability_trades(via_data)
                     rob_result = run_robustness_stage(
                         strategy_name=strat_name,
                         trades=trades,
@@ -828,6 +880,7 @@ def main() -> int:
         if results is None:
             log.error("No previous results found in %s", RESULTS_DIR)
             return 2
+        _stamp_stages_requested(results)
 
         if _is_stage_available("reporting"):
             try:
