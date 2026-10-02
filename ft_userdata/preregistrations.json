@@ -614,6 +614,33 @@
         }
       ],
       "resolution": null
+    },
+    {
+      "id": "ff-forward-v2-vs-no-protections-2026-10-01",
+      "bot": "FundingFadeV1",
+      "status": "open",
+      "registered": "2026-10-01",
+      "review_by": "2027-04-01",
+      "interim_look": "2026-12-31 (descriptive only, no decision)",
+      "min_closed_trades": 30,
+      "issue": "#109",
+      "context": "2026-10-01 ablation (#28): removing component C (CooldownPeriod 4 candles + StoplossGuard 2 stops/96 candles -> 36-candle lock) helped in 7 of 8 half-years; entries it blocked were profitable in every segment. V2 was designed after seeing that test's OOS, so only data from 2026-10-01 is clean.",
+      "arms": {
+        "control": "FFF_V2 = live FundingFadeV1 at commit f913795 (md5 f4f70fb0a7c434bc96a2bf75382692fa)",
+        "challenger": "FFF_V2_noC = same, protections = []"
+      },
+      "method": "Paired replay of both arms on data from 2026-10-01 (trades opened on/after that date) with research/ff_forward_v2c/run_forward.sh: freqtrade backtesting, --timeframe-detail 1m, --enable-protections, fee 0.00075, live-matched config bt.json. Funding feathers copied read-only from ft-funding-fade. Live calibration reported (live V2 entries replayed by the control).",
+      "rules": [
+        "Live FundingFade stays on V2 for the whole test; no runtime change.",
+        "Decision only when the control has >= 30 closed forward trades or at review_by, whichever is later. Interim looks are descriptive.",
+        "Switch live to V2 without protections only if: challenger forward P&L > control, 7-day block bootstrap P(challenger better) >= 0.80, and challenger max drawdown <= 1.25x control. Otherwise keep V2 and close.",
+        "P >= 0.80 (not 0.95) is deliberate: the only data V2's design did not see (2023-01 to 2025-06) already favoured removing C (P 0.97); the forward test must confirm the direction, not re-prove it from zero.",
+        "If live-calibration replay falls below 70% of live entries, pause scoring and investigate simulator drift first.",
+        "No tuning of either arm during the test. Record any amendment here."
+      ],
+      "triggers": [],
+      "amendments": [],
+      "resolution": null
     }
   ]
 }
