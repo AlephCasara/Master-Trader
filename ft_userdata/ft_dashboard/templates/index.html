@@ -495,7 +495,10 @@
                     </div>
                   </div>
                 </template>
-                <span class="dim" x-show="!bot.baseline_comparable">—</span>
+                <!-- Observational bots carry no gate math, but the closed-trade
+                     count is real data (bd kez) — render it instead of a dash. -->
+                <span class="num dim" title="closed trades — observational bot, not a measurement epoch"
+                      x-show="!bot.baseline_comparable" x-text="bot.stats?.closed_trade_count ?? 0">0</span>
               </td>
               <td>
                 <template x-if="bot.baseline_comparable">
@@ -507,7 +510,8 @@
                     </div>
                   </div>
                 </template>
-                <span class="dim" x-show="!bot.baseline_comparable">—</span>
+                <span class="num dim" title="days since epoch start — observational bot, not a measurement epoch"
+                      x-show="!bot.baseline_comparable" x-text="(bot.days_running ?? 0).toFixed(1) + 'd'">—</span>
               </td>
               <td>
                 <template x-if="bot.baseline_comparable && bot.stats?.profit_factor != null">
@@ -518,7 +522,8 @@
                     </span>
                   </span>
                 </template>
-                <span class="dim" x-show="!bot.baseline_comparable || bot.stats?.profit_factor == null">—</span>
+                <span class="dim" title="profit factor needs a baseline — observational bot, not a measurement epoch"
+                      x-show="!bot.baseline_comparable || bot.stats?.profit_factor == null">—</span>
               </td>
               <td>
                 <template x-if="bot.baseline_comparable">
@@ -529,7 +534,8 @@
                     </span>
                   </span>
                 </template>
-                <span class="dim" x-show="!bot.baseline_comparable">—</span>
+                <span class="dim" title="drawdown needs a baseline — observational bot, not a measurement epoch"
+                      x-show="!bot.baseline_comparable">—</span>
               </td>
               <td>
                 <template x-if="lastClosedTrade(bot)">
@@ -562,6 +568,24 @@
 
     <!-- Inline drawer: dossier for the SELECTED dry bot only -->
     <template x-for="bot in dryRunBots.filter(b => b.key === selectedDryBot)" :key="bot.key">
+      <!-- Strategy explainer (bd y44): repo-authored content from
+           strategy_notes.json via /api/strategy_notes. Collapsed by default
+           (PRODUCT.md: no clutter); stays hidden when no notes exist. -->
+      <div class="card col-12 strategy-explainer" x-show="strategyNote(bot.key)" x-cloak>
+        <details class="strategy-details">
+          <summary>
+            <span class="card-title">How this strategy works</span>
+            <span class="card-sub" x-text="strategyNote(bot.key)?.strategy + ' · ' + (strategyNote(bot.key)?.timeframe || '?') + ' · ' + (strategyNote(bot.key)?.provenance || '')">—</span>
+          </summary>
+          <div class="strategy-note-grid">
+            <div class="ltt-row"><span class="ltt-k">summary</span><span class="ltt-v" x-text="strategyNote(bot.key)?.summary">—</span></div>
+            <div class="ltt-row"><span class="ltt-k">enters when</span><span class="ltt-v" x-text="strategyNote(bot.key)?.entry">—</span></div>
+            <div class="ltt-row"><span class="ltt-k">exits how</span><span class="ltt-v" x-text="strategyNote(bot.key)?.exit">—</span></div>
+            <div class="ltt-row"><span class="ltt-k">risk</span><span class="ltt-v" x-text="strategyNote(bot.key)?.risk">—</span></div>
+            <div class="ltt-row" x-show="(strategyNote(bot.key)?.indicators || []).length"><span class="ltt-k">reads</span><span class="ltt-v dim" x-text="(strategyNote(bot.key)?.indicators || []).join(', ')">—</span></div>
+          </div>
+        </details>
+      </div>
       <div class="col gap-md">
 
         <!-- header card with verdict -->
@@ -757,7 +781,7 @@
             <thead>
               <tr>
                 <th>closed</th><th>pair</th><th class="right">entry</th><th class="right">exit</th>
-                <th class="right">p&l %</th><th>reason</th><th class="right">duration</th>
+                <th class="right">p&l %</th><th class="right">size</th><th>reason</th><th class="right">duration</th>
               </tr>
             </thead>
             <tbody>
@@ -768,6 +792,7 @@
                   <td class="right" x-text="fmtRate(t.open_rate)"></td>
                   <td class="right" x-text="fmtRate(t.close_rate)"></td>
                   <td class="right" :class="t.profit_pct >= 0 ? 'pos' : 'neg'" x-text="fmtPctSigned(t.profit_pct)"></td>
+                  <td class="right dim" title="Stake the position was entered with; p&l % is net of ~0.2% round-trip fees" x-text="fmtUsd(t.stake_amount)">—</td>
                   <td><span class="reason-pill" :class="t.exit_reason" x-text="t.exit_reason"></span></td>
                   <td class="right" x-text="fmtMin(t.trade_duration)"></td>
                 </tr>
@@ -838,7 +863,8 @@
               <span class="pair-name" x-text="trade.pair">PAIR</span>
             </div>
             <div class="trade-card-meta">
-              <span class="trade-pnl" :class="trade.is_win ? 'pos' : 'neg'">
+              <span class="trade-pnl" :class="trade.is_win ? 'pos' : 'neg'"
+                    title="P&L is net of ~0.2% round-trip exchange fees (0.1% per side). The entry → exit arrows show the raw price move; this number already deducts fees.">
                 <span x-text="(trade.profit_pct >= 0 ? '+' : '') + (trade.profit_pct||0).toFixed(2) + '%'">—</span>
                 <span class="abs" x-text="'(' + fmtUsdSigned(trade.profit_abs) + ')'">—</span>
               </span>
@@ -854,6 +880,8 @@
             <span><span x-text="trade.is_open ? 'now' : 'exit'">exit</span> <strong x-text="(trade.close_rate||0).toPrecision(5)">—</strong></span>
             <span class="sep">·</span>
             <span x-text="formatTradeWindow(trade)">—</span>
+            <span class="sep" x-show="trade.stake_amount != null">·</span>
+            <span class="dim" title="Order size: the stake this position was entered with" x-show="trade.stake_amount != null" x-text="'stake ' + fmtUsd(trade.stake_amount)">—</span>
             <span class="grow"></span>
             <div class="tf-pills">
               <template x-for="tf in ['5m','15m','1h','4h']" :key="tf">
@@ -866,6 +894,14 @@
           </div>
           <div class="chart-controls">
             <div class="scale-toggle" aria-label="Price scale"><button :aria-pressed="tradeScale(trade)==='price'" @click="setTradeScale(trade,'price')">Price action</button><button :aria-pressed="tradeScale(trade)==='exits'" @click="setTradeScale(trade,'exits')">All exits</button></div>
+            <div class="tf-pills" aria-label="Indicator overlays" title="Standard-parameter indicators computed from venue candles — they visualize the mechanism, not the strategy's own dataframe values">
+              <template x-for="ov in overlayOptions" :key="ov.key">
+                <button class="tf-pill" :class="overlayOn(trade, ov.key) ? 'on' : ''"
+                        :aria-pressed="overlayOn(trade, ov.key)"
+                        @click="toggleTradeOverlay(trade, ov.key)"
+                        x-text="ov.label">ov</button>
+              </template>
+            </div>
             <button class="expand-chart" x-show="!tradeChartStatus(trade).clipped" :disabled="!!tradeChartStatus(trade).loading" @click="focusTradeEntry(trade)">Show entry</button>
             <button class="expand-chart" :aria-expanded="expandedTrade===tradeChartId(trade)" @click="expandTrade(trade)" x-text="expandedTrade===tradeChartId(trade)?'Restore grid':'Expand chart'"></button>
           </div>
