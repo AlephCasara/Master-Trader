@@ -47,6 +47,7 @@ function dash() {
     // Single selection so the table controls the view rather than stacking dossiers.
     selectedDryBot: null,
     closedTrades: [],
+    strategyNotes: {},
     tradesView: 'open',
     tradesFilter: 'all',
     _tradeTfOverride: {},
@@ -97,6 +98,7 @@ function dash() {
     _chartResizeTimers: [],
     _equityData: {},
     _tradeCandles: {},
+    _tradeOverlays: {},
     _tradeChartState: {},
     _tradeChartRequest: {},
     _tradeChartsBusy: false,
@@ -114,6 +116,7 @@ function dash() {
 
       this.tickClock();
       setInterval(() => this.tickClock(), 1000);
+      this.fetchStrategyNotes();
       this.fetchKillersSL();
       this.refresh().then(() => {
         this.equityBot = 'fleet';
@@ -1031,6 +1034,7 @@ function dash() {
             open_rate: t.open_rate, close_rate: t.current_rate,
             open_ts: t.open_timestamp, close_ts: now,
             profit_pct: t.profit_pct, profit_abs: t.profit_abs,
+            stake_amount: t.stake_amount ?? null,
             is_win: (t.profit_abs || 0) > 0, is_open: true,
             stop_rate: ftStop,
             is_short: t.is_short,
@@ -1133,6 +1137,16 @@ function dash() {
       } catch (e) { console.warn('fetchClosedTrades', e); }
     },
 
+    async fetchStrategyNotes() {
+      // Strategy explainer content (bd y44): repo-authored, served as data.
+      // Missing/empty is a valid state — the section simply stays hidden.
+      try {
+        const r = await fetch('/api/strategy_notes', { cache: 'no-store' });
+        if (r.ok) this.strategyNotes = await r.json();
+      } catch (e) { console.warn('fetchStrategyNotes', e); }
+    },
+    strategyNote(botKey) { return this.strategyNotes[botKey] || null; },
+
     async renderTradesCharts() {
       if (this._tradeChartsBusy) return;
       this._tradeChartsBusy = true;
@@ -1147,6 +1161,22 @@ function dash() {
       } finally { this._tradeChartsBusy = false; }
     },
     focusTradeEntry(trade) { charts[this.tradeChartId(trade)]?.focusEntry(); },
+
+    // Indicator overlays (bd ggb): standard-parameter BB(20,2) / EMA(200) /
+    // Wilder RSI(14) computed from venue candles in the chart module. Off by
+    // default; per-chart, session-only (PRODUCT.md: no clutter by default).
+    overlayOptions: [
+      { key: 'bb', label: 'BB(20,2)' },
+      { key: 'ema', label: 'EMA(200)' },
+      { key: 'rsi', label: 'RSI(14)' },
+    ],
+    overlayOn(trade, key) { return (this._tradeOverlays[this.tradeChartId(trade)] || new Set()).has(key); },
+    toggleTradeOverlay(trade, key) {
+      const id = this.tradeChartId(trade);
+      const set = this._tradeOverlays[id] || (this._tradeOverlays[id] = new Set());
+      set.has(key) ? set.delete(key) : set.add(key);
+      this.renderTradeChart(trade);
+    },
 
     tradeChartStatus(trade) { return this._tradeChartState[this.tradeChartId(trade)] || { loading: true }; },
     retryTradeChart(trade) {
@@ -1204,7 +1234,7 @@ function dash() {
       if (!el || !window.TradingPriceChart) return;
       if (charts[chartId] && charts[chartId].getDom() !== el) { charts[chartId].dispose(); delete charts[chartId]; }
       if (!charts[chartId]) charts[chartId] = new window.TradingPriceChart(el);
-      charts[chartId].render(candles, trade, tf, this.tradeScale(trade));
+      charts[chartId].render(candles, trade, tf, this.tradeScale(trade), Array.from(this._tradeOverlays[chartId] || []));
       charts[chartId].resize();
     },
 
