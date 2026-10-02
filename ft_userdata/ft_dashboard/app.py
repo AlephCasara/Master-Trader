@@ -273,6 +273,41 @@ FLEET_REGISTRY: list[dict[str, Any]] = [
         "no_baseline": True,
         "baseline": None,
     },
+    # ── Test lane round 2 (bd Master-Trader-p8k, 2026-10-02) ────────────────
+    # Same rules as round 1: machinery exercisers, never measurement epochs.
+    # ElliotV5 and CombinedBinHAndCluc are in-repo community strategies.
+    # NostalgiaForInfinityX6 was attempted and dropped: pandas-3 dtype
+    # strictness breaks it past a first bbands-naming shim (follow-up bead).
+    {
+        "key": "test-elliot",
+        "name": "ElliotV5",
+        "label": "test · elliot-v5",
+        "url": "http://ft-test-elliot:8080",
+        "account_group": "test-lane",
+        "strategy_kind": "test-lane",
+        "epoch_start_ts_ms": TEST_LANE_EPOCH_TS_MS,
+        "epoch_label": "test lane · dry-run machinery exercising",
+        "strategy_version": "ElliotV5 · test",
+        "entry_gate_label": "test lane — not a measurement epoch",
+        "observational": True,
+        "no_baseline": True,
+        "baseline": None,
+    },
+    {
+        "key": "test-combined",
+        "name": "CombinedBinHAndCluc",
+        "label": "test · combined-bin-cluc",
+        "url": "http://ft-test-combined:8080",
+        "account_group": "test-lane",
+        "strategy_kind": "test-lane",
+        "epoch_start_ts_ms": TEST_LANE_EPOCH_TS_MS,
+        "epoch_label": "test lane · dry-run machinery exercising",
+        "strategy_version": "CombinedBinHAndCluc · test",
+        "entry_gate_label": "test lane — not a measurement epoch",
+        "observational": True,
+        "no_baseline": True,
+        "baseline": None,
+    },
 ]
 
 API_USER = os.environ.get("FREQTRADE__API_SERVER__USERNAME", "")
