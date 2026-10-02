@@ -275,9 +275,9 @@ FLEET_REGISTRY: list[dict[str, Any]] = [
     },
     # ── Test lane round 2 (bd Master-Trader-p8k, 2026-10-02) ────────────────
     # Same rules as round 1: machinery exercisers, never measurement epochs.
-    # ElliotV5 and CombinedBinHAndCluc are in-repo community strategies;
-    # NostalgiaForInfinityX6 was recovered verbatim from git history (killed
-    # upstream for inactivity, kept here for load variety on a 10-pair list).
+    # ElliotV5 and CombinedBinHAndCluc are in-repo community strategies.
+    # NostalgiaForInfinityX6 was attempted and dropped: pandas-3 dtype
+    # strictness breaks it past a first bbands-naming shim (follow-up bead).
     {
         "key": "test-elliot",
         "name": "ElliotV5",
@@ -303,21 +303,6 @@ FLEET_REGISTRY: list[dict[str, Any]] = [
         "epoch_start_ts_ms": TEST_LANE_EPOCH_TS_MS,
         "epoch_label": "test lane · dry-run machinery exercising",
         "strategy_version": "CombinedBinHAndCluc · test",
-        "entry_gate_label": "test lane — not a measurement epoch",
-        "observational": True,
-        "no_baseline": True,
-        "baseline": None,
-    },
-    {
-        "key": "test-nfi",
-        "name": "NostalgiaForInfinityX6",
-        "label": "test · nfi-x6",
-        "url": "http://ft-test-nfi:8080",
-        "account_group": "test-lane",
-        "strategy_kind": "test-lane",
-        "epoch_start_ts_ms": TEST_LANE_EPOCH_TS_MS,
-        "epoch_label": "test lane · dry-run machinery exercising",
-        "strategy_version": "NostalgiaForInfinityX6 · test",
         "entry_gate_label": "test lane — not a measurement epoch",
         "observational": True,
         "no_baseline": True,

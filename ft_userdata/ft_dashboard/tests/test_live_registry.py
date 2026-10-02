@@ -23,7 +23,6 @@ def test_dashboard_tracks_every_current_live_executor():
         "test-nasos",
         "test-elliot",
         "test-combined",
-        "test-nfi",
     }
     assert "cascade" not in bots
 
