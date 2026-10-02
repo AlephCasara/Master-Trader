@@ -54,6 +54,9 @@ INSIDERS_ROUND3_EPOCH_TS_MS = 1787589161684  # 2026-08-24T16:32:41.684Z
 KILLERS_ROUND5_EPOCH_TS_MS = 1787854748304  # 2026-08-27T18:19:08.304Z
 INSIDERS_ROUND5_EPOCH_TS_MS = 1787854752005  # 2026-08-27T18:19:12.005Z
 OI_ROUND4_EPOCH_TS_MS = 1787619881124  # 2026-08-25T01:04:41.124Z
+# Test lane starts on the Zeabur deployment with empty DBs (2026-10-02).
+# Machinery-exercising bots, never a measurement epoch.
+TEST_LANE_EPOCH_TS_MS = 1790904000000  # 2026-10-02T01:20:00Z
 
 FLEET_REGISTRY: list[dict[str, Any]] = [
     {
@@ -229,6 +232,43 @@ FLEET_REGISTRY: list[dict[str, Any]] = [
             "legacy_label": "Binance futures dry-run",
             "live_label": "Hyperliquid live",
         },
+        "observational": True,
+        "no_baseline": True,
+        "baseline": None,
+    },
+    # ── Test lane (bd test lane 2026-10-02) ─────────────────────────────────
+    # Busy dry-run bots whose only purpose is exercising the machinery fast
+    # (dashboard polling, gates counting, equity rendering, incidents). They
+    # are NOT measurement epochs: test-lane results never feed graduation,
+    # fleet totals or preregistrations. Picked from the 2026-10-02 backtest
+    # round 2: BollingerRSI ~4.8 trades/day (+6.67%/122d), NASOSv5 ~0.3/day
+    # (+1.36%/122d).
+    {
+        "key": "test-bollinger",
+        "name": "BollingerRSIMeanReversion",
+        "label": "test · bollinger-rsi",
+        "url": "http://ft-test-bollinger:8080",
+        "account_group": "test-lane",
+        "strategy_kind": "test-lane",
+        "epoch_start_ts_ms": TEST_LANE_EPOCH_TS_MS,
+        "epoch_label": "test lane · dry-run machinery exercising",
+        "strategy_version": "BollingerRSIMeanReversion · test",
+        "entry_gate_label": "test lane — not a measurement epoch",
+        "observational": True,
+        "no_baseline": True,
+        "baseline": None,
+    },
+    {
+        "key": "test-nasos",
+        "name": "NASOSv5",
+        "label": "test · nasos-v5",
+        "url": "http://ft-test-nasos:8080",
+        "account_group": "test-lane",
+        "strategy_kind": "test-lane",
+        "epoch_start_ts_ms": TEST_LANE_EPOCH_TS_MS,
+        "epoch_label": "test lane · dry-run machinery exercising",
+        "strategy_version": "NASOSv5 · test",
+        "entry_gate_label": "test lane — not a measurement epoch",
         "observational": True,
         "no_baseline": True,
         "baseline": None,

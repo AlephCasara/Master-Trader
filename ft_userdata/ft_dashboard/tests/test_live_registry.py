@@ -18,6 +18,9 @@ def test_dashboard_tracks_every_current_live_executor():
         "short-keltner-hl",
         "killers-ft",
         "insiders-ft",
+        # Test lane (2026-10-02): machinery-exercising bots, never epochs.
+        "test-bollinger",
+        "test-nasos",
     }
     assert "cascade" not in bots
 

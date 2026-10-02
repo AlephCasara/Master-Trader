@@ -36,7 +36,7 @@ def test_suffix_rewrites_every_url_and_receiver_url(monkeypatch):
             # The registry (bare) host must be recoverable by suffix removal —
             # the auth lookup depends on it.
             assert host.removesuffix(".zeabur.internal") in mod.SERVICE_API_SLUGS or \
-                host.removesuffix(".zeabur.internal").startswith(("killers", "insiders")), raw
+                host.removesuffix(".zeabur.internal").startswith(("killers", "insiders", "ft-test")), raw
 
 
 def test_api_auth_strips_suffix_for_slug_lookup(monkeypatch):

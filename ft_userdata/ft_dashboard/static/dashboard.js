@@ -560,6 +560,7 @@ function dash() {
       return bot?.account_group === 'binance-spot' ? 'shared wallet' : 'dedicated account';
     },
     strategyKindLabel(bot) {
+      if (bot?.strategy_kind === 'test-lane') return 'test lane';
       return bot?.strategy_kind === 'copy-trader' ? 'copy-trader' : 'autonomous quant';
     },
     botCapitalLabel(bot) {
