@@ -249,7 +249,7 @@
                 <td class="right num" :class="(bot.pnl?.closed || 0) >= 0 ? 'pos' : 'neg'" x-text="fmtUsdSigned(bot.pnl?.closed)">—</td>
                 <td class="right num" :class="(bot.pnl?.unrealized || 0) >= 0 ? 'pos' : 'neg'" x-text="fmtUsdSigned(bot.pnl?.unrealized)">—</td>
                 <td class="right num" x-text="bot.stats?.closed_trade_count || 0">0</td>
-                <td class="right num" x-text="bot.open_trades?.length || 0">0</td>
+                <td class="right num" x-text="openPositionCount(bot) + (pendingEntryCount(bot) ? ' +' + pendingEntryCount(bot) + ' pending' : '')">0</td>
                 <td>
                   <span class="readiness-line" :class="readinessTone(bot)">
                     <span class="readiness-dot" aria-hidden="true"></span>
@@ -960,7 +960,7 @@
           </span>
           <span class="bis-stat">
             <span class="bis-stat-k">open</span>
-            <strong class="num" x-text="bot.open_trades?.length || 0">0</strong>
+            <strong class="num" x-text="openPositionCount(bot)">0</strong>
           </span>
           <span class="bis-stat bis-stat-wide">
             <span class="bis-stat-k">activity</span>
@@ -1027,7 +1027,7 @@
         <div class="card col-12">
           <div class="card-head">
             <div class="card-title">Open trade status</div>
-            <div class="card-sub" x-text="(bot.open_trades?.length ?? 0) + ' open · ' + fmtUsd(bot.capital_at_risk?.abs_loss || 0) + ' at risk'">0 open</div>
+            <div class="card-sub" x-text="openPositionCount(bot) + ' open' + (pendingEntryCount(bot) ? ' · ' + pendingEntryCount(bot) + ' entry pending' : '') + ' · ' + fmtUsd(bot.capital_at_risk?.abs_loss || 0) + ' at risk'">0 open</div>
           </div>
           <template x-if="bot.open_trades?.length">
             <div class="ot-list">

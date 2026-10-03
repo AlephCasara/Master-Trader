@@ -1157,6 +1157,10 @@ function dash() {
       return rows;
     },
     entryResting(trade) { return !!trade.is_open && ['pending', 'partial'].includes(trade.entry?.state); },
+    // #159: a resting entry with nothing filled is an order, not a position.
+    isPendingEntry(t) { return t?.entry?.state === 'pending' && !(Number(t?.amount) > 0); },
+    openPositionCount(bot) { return (bot?.open_trades || []).filter(t => !this.isPendingEntry(t)).length; },
+    pendingEntryCount(bot) { return (bot?.open_trades || []).filter(t => this.isPendingEntry(t)).length; },
     // Dashboard cancel exists only for an entry with nothing filled at all.
     canCancelEntry(trade) { return this.entryResting(trade) && !!trade.entry_pending && trade.entry?.cancellable === true && !!trade.entry?.order_id; },
     entryActionNote(trade) {
