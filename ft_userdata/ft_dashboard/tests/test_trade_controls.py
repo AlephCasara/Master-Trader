@@ -96,7 +96,15 @@ def test_upstream_error_does_not_enable_blind_retry(setup):
     assert up.post.await_count==1
 
 
+
+
 # ── Cancel a resting entry order (#159) ──────────────────────────────────────
+# Allowed only before any fill, and reported as done only after a fresh
+# /status confirms the order is gone and nothing filled.
+def _status(*trades):
+    return httpx.Response(200, json=list(trades), request=httpx.Request('GET', 'http://executor'))
+
+
 @pytest.fixture
 def pending(setup):
     client, h, b, t, up = setup
@@ -105,20 +113,29 @@ def pending(setup):
          'open_timestamp': 12345678., 'is_short': False}
     t = {'trade_id': 4, 'pair': b['pair'], 'amount': 0., 'open_timestamp': b['open_timestamp'], 'is_short': False,
          'orders': [{'order_id': 'entry-1', 'is_open': True, 'ft_order_side': 'buy', 'status': 'open', 'filled': 0}]}
-    up.get.return_value = httpx.Response(200, json=[t], request=httpx.Request('GET', 'http://executor'))
+    # Before the DELETE the entry rests; afterwards Freqtrade has removed the trade.
+    up.get.side_effect = [_status(t), _status()]
     up.delete.return_value = httpx.Response(200, json={}, request=httpx.Request('DELETE', 'http://executor'))
     return client, h, b, t, up
 
 
 def test_confirmed_cancel_entry_submits_once(pending):
     client, h, b, t, up = pending
-    assert client.post('/api/trades/test/4/cancel-entry', headers=h, json=b).json()['state'] == 'accepted'
-    assert client.post('/api/trades/test/4/cancel-entry', headers=h, json=b).json()['replayed']
+    assert client.post('/api/trades/test/4/cancel-entry', headers=h, json=b).json()['state'] == 'cancelled'
+    assert client.post('/api/trades/test/4/cancel-entry', headers=h, json=b).json() == {'state': 'accepted', 'replayed': True}
     up.delete.assert_awaited_once_with('http://executor/api/v1/trades/4/open-order')
     b['request_id'] = str(uuid4())
+    up.get.side_effect = [_status(t)]
     assert client.post('/api/trades/test/4/cancel-entry', headers=h, json=b).status_code == 409
     assert up.delete.await_count == 1
     up.post.assert_not_awaited()
+
+
+def test_cancel_confirmed_when_order_shows_cancelled_with_no_fill(pending):
+    client, h, b, t, up = pending
+    after = {**t, 'orders': [{**t['orders'][0], 'is_open': False, 'status': 'canceled'}]}
+    up.get.side_effect = [_status(t), _status(after)]
+    assert client.post('/api/trades/test/4/cancel-entry', headers=h, json=b).json()['state'] == 'cancelled'
 
 
 def test_cancel_entry_needs_its_own_action_header(pending):
@@ -128,7 +145,7 @@ def test_cancel_entry_needs_its_own_action_header(pending):
     up.get.assert_not_awaited(); up.delete.assert_not_awaited()
 
 
-@pytest.mark.parametrize('field,value', [('amount', 5.), ('order_id', 'entry-2'), ('pair', 'OTHER/USDC:USDC'),
+@pytest.mark.parametrize('field,value', [('order_id', 'entry-2'), ('pair', 'OTHER/USDC:USDC'),
                                          ('open_timestamp', 23456789.), ('is_short', True)])
 def test_stale_confirmation_cannot_cancel_changed_entry(pending, field, value):
     client, h, b, t, up = pending; b[field] = value
@@ -136,10 +153,28 @@ def test_stale_confirmation_cannot_cancel_changed_entry(pending, field, value):
     up.delete.assert_not_awaited()
 
 
+def test_cancel_request_must_confirm_zero_filled(pending):
+    client, h, b, t, up = pending; b['amount'] = 5.
+    assert client.post('/api/trades/test/4/cancel-entry', headers=h, json=b).status_code == 422
+    up.get.assert_not_awaited(); up.delete.assert_not_awaited()
+
+
+@pytest.mark.parametrize('trade_amount,order_filled', [(0., 5.), (5., 0.), (0., None)])
+def test_any_fill_or_unreported_fill_refuses_cancel(pending, trade_amount, order_filled):
+    # Covers a Hyperliquid order record lagging either way, and a missing fill.
+    client, h, b, t, up = pending
+    t['amount'] = trade_amount
+    t['orders'][0]['filled'] = order_filled
+    up.get.side_effect = [_status(t)]
+    b['amount'] = 0.
+    assert client.post('/api/trades/test/4/cancel-entry', headers=h, json=b).status_code == 409
+    up.delete.assert_not_awaited()
+
+
 def test_cancel_refused_when_another_order_would_be_cancelled(pending):
     client, h, b, t, up = pending
-    t['orders'].append({'order_id': 'exit-1', 'is_open': True, 'ft_order_side': 'sell'})
-    up.get.return_value = httpx.Response(200, json=[t], request=httpx.Request('GET', 'http://executor'))
+    t['orders'].append({'order_id': 'exit-1', 'is_open': True, 'ft_order_side': 'sell', 'filled': 0})
+    up.get.side_effect = [_status(t)]
     assert client.post('/api/trades/test/4/cancel-entry', headers=h, json=b).status_code == 409
     up.delete.assert_not_awaited()
 
@@ -147,16 +182,45 @@ def test_cancel_refused_when_another_order_would_be_cancelled(pending):
 def test_filled_entry_is_not_cancelled(pending):
     client, h, b, t, up = pending
     t['orders'][0].update(is_open=False, status='closed')
-    up.get.return_value = httpx.Response(200, json=[t], request=httpx.Request('GET', 'http://executor'))
+    up.get.side_effect = [_status(t)]
     assert client.post('/api/trades/test/4/cancel-entry', headers=h, json=b).json()['state'] == 'no_open_entry'
     up.delete.assert_not_awaited()
 
 
+@pytest.mark.parametrize('after', [
+    'order_still_open',      # HTTP 200 but Freqtrade refused or has not cancelled
+    'fill_appeared',         # a fill raced the cancel; the filled part stays open
+    'order_filled',          # the order record now shows a fill
+    'refetch_failed',        # cannot confirm
+    'delete_error',          # non-2xx from Freqtrade
+])
+def test_unconfirmed_cancel_is_never_reported_as_success(pending, after):
+    client, h, b, t, up = pending
+    if after == 'order_still_open':
+        up.get.side_effect = [_status(t), _status(t)]
+    elif after == 'fill_appeared':
+        up.get.side_effect = [_status(t), _status({**t, 'amount': 3., 'orders': [{**t['orders'][0], 'is_open': False, 'status': 'canceled', 'filled': 3.}]})]
+    elif after == 'order_filled':
+        up.get.side_effect = [_status(t), _status({**t, 'orders': [{**t['orders'][0], 'is_open': False, 'status': 'canceled', 'filled': 2.}]})]
+    elif after == 'refetch_failed':
+        up.get.side_effect = [_status(t), httpx.ReadTimeout('offline')]
+    else:
+        up.delete.return_value = httpx.Response(502, json={}, request=httpx.Request('DELETE', 'http://executor'))
+        up.get.side_effect = [_status(t), _status()]
+    assert client.post('/api/trades/test/4/cancel-entry', headers=h, json=b).json()['state'] == 'unconfirmed'
+    # Recorded as uncertain: replay reports it, and a fresh request is refused.
+    assert client.post('/api/trades/test/4/cancel-entry', headers=h, json=b).json() == {'state': 'unknown', 'replayed': True}
+    b['request_id'] = str(uuid4())
+    up.get.side_effect = [_status(t)]
+    assert client.post('/api/trades/test/4/cancel-entry', headers=h, json=b).status_code == 409
+    assert up.delete.await_count == 1
+
+
 def test_pending_cancel_does_not_block_a_later_close(pending):
     client, h, b, t, up = pending
-    assert client.post('/api/trades/test/4/cancel-entry', headers=h, json=b).json()['state'] == 'accepted'
     filled = {'trade_id': 4, 'pair': b['pair'], 'amount': 20., 'open_timestamp': b['open_timestamp'], 'is_short': False}
-    up.get.return_value = httpx.Response(200, json=[filled], request=httpx.Request('GET', 'http://executor'))
+    up.get.side_effect = [_status(t), _status(), _status(filled)]
+    assert client.post('/api/trades/test/4/cancel-entry', headers=h, json=b).json()['state'] == 'cancelled'
     h['X-Trade-Action'] = 'close'
     close = {'request_id': str(uuid4()), 'pair': b['pair'], 'amount': 20., 'open_timestamp': b['open_timestamp'], 'is_short': False}
     assert client.post('/api/trades/test/4/close', headers=h, json=close).json()['state'] == 'accepted'

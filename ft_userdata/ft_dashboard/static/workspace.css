@@ -185,6 +185,7 @@ button:focus-visible,a:focus-visible,summary:focus-visible { outline:2px solid v
 .exit-policy dt,.entry-order dt { color:var(--text-3); }
 .exit-policy dd,.entry-order dd { margin:0; font-variant-numeric:tabular-nums; }
 .exit-policy-note { margin:8px 0 0; color:var(--text-3); }
+.entry-order-note { margin:0 0 12px; font-size:12px; line-height:1.5; color:var(--text-2); text-align:right; }
 .entry-order-head { color:var(--exit-pending-text); }
 .trade-reason.reason-entry-pending { color:var(--exit-pending-text); background:var(--exit-pending-bg); border-color:rgb(var(--warn-rgb) / .3); }
 .trade-entry-price.pending { color:var(--exit-pending-text); }

@@ -44,7 +44,7 @@
     </div></template>
     <template x-if="closeKind==='cancel-entry'"><div>
       <p x-text="(closeTrade?.entry?.side==='sell'?'Sell':'Buy')+' '+closeTrade?.entry?.requested+' at '+fmtRate(closeTrade?.entry?.price)+' · '+(closeTrade?.entry?.filled||0)+' filled'"></p>
-      <p>The bot asks the exchange to cancel this entry order. If nothing has filled, Freqtrade removes the trade. Any filled quantity stays open as a position.</p>
+      <p>The bot asks the exchange to cancel this entry order. If nothing has filled, Freqtrade removes the trade. The dashboard reports success only after the bot confirms the order is gone with nothing filled.</p>
     </div></template>
     <label>Bot API username<input autocomplete="username" x-model="closeUser" required :disabled="closeBusy"></label>
     <label>Bot API password<input type="password" autocomplete="current-password" x-model="closePassword" required :disabled="closeBusy"></label>
@@ -193,7 +193,7 @@
     <div class="workspace-vitals">
       <div><span>Account equity</span><strong x-text="fmtUsd(hero.walletNow)"></strong><small>Shared accounts counted once</small></div>
       <div><span>Realized P&amp;L</span><strong :class="hero.totalRealizedPnl>=0?'pos':'neg'" x-text="fmtUsdSigned(hero.totalRealizedPnl)"></strong><small x-text="hero.closedTrades+' closed trades · live epochs'"></small></div>
-      <div><span>Unrealized P&amp;L</span><strong :class="hero.totalUnrealizedPnl>=0?'pos':'neg'" x-text="fmtUsdSigned(hero.totalUnrealizedPnl)"></strong><small x-text="hero.openCount+' open positions'"></small></div>
+      <div><span>Unrealized P&amp;L</span><strong :class="hero.totalUnrealizedPnl>=0?'pos':'neg'" x-text="fmtUsdSigned(hero.totalUnrealizedPnl)"></strong><small x-text="hero.openCount+' open positions'+(hero.pendingEntries?' · '+hero.pendingEntries+' entry pending':'')"></small></div>
       <div><span>Loss to bot stops</span><strong x-text="fmtUsd(hero.capitalAtRisk)"></strong><small>Estimate · gaps and fees can increase loss</small></div>
     </div>
 
@@ -416,7 +416,7 @@
     <section class="workspace-vitals" aria-label="Portfolio performance">
       <div><span>Account equity</span><strong x-text="fmtUsd(hero.walletNow)"></strong><small>Shared accounts counted once</small></div>
       <div><span>Realized P&amp;L</span><strong :class="hero.totalRealizedPnl>=0?'pos':'neg'" x-text="fmtUsdSigned(hero.totalRealizedPnl)"></strong><small x-text="hero.closedTrades+' closed trades'"></small></div>
-      <div><span>Unrealized P&amp;L</span><strong :class="hero.totalUnrealizedPnl>=0?'pos':'neg'" x-text="fmtUsdSigned(hero.totalUnrealizedPnl)"></strong><small x-text="hero.openCount+' open positions'"></small></div>
+      <div><span>Unrealized P&amp;L</span><strong :class="hero.totalUnrealizedPnl>=0?'pos':'neg'" x-text="fmtUsdSigned(hero.totalUnrealizedPnl)"></strong><small x-text="hero.openCount+' open positions'+(hero.pendingEntries?' · '+hero.pendingEntries+' entry pending':'')"></small></div>
       <div><span>Max drawdown</span><strong x-text="fmtPct(-portfolioDrawdownMax,2)"></strong><small>Includes the current open mark</small></div>
     </section>
     <div class="grid grid-12 performance-primary">
@@ -878,8 +878,9 @@
           </div>
           <div class="position-actions" x-show="trade.is_open">
             <button class="close-position" x-show="!entryResting(trade)" :disabled="!trade.trade_id || !trade.amount" @click="showClose(trade)">Close position…</button>
-            <button class="close-position" x-show="entryResting(trade)" :disabled="!trade.trade_id || !trade.entry?.order_id" @click="showClose(trade,'cancel-entry')">Cancel entry order…</button>
+            <button class="close-position" x-show="canCancelEntry(trade)" :disabled="!trade.trade_id" @click="showClose(trade,'cancel-entry')">Cancel entry order…</button>
           </div>
+          <p class="entry-order-note" x-show="entryActionNote(trade)" x-text="entryActionNote(trade)"></p>
           <div class="entry-order" x-show="entryResting(trade)" x-cloak>
             <p class="entry-order-head" x-text="trade.entry_pending?'Entry order resting · nothing has filled, so there is no position or P&amp;L yet':'Entry partly filled · the rest of the order is still resting'"></p>
             <dl>

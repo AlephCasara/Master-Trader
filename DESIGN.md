@@ -189,9 +189,12 @@ pill shapes.
   type, side, size and limit, how long it has rested, when Freqtrade's
   `unfilledtimeout.entry` expires it, and the limit's distance from the current
   price. The stop row says the stop is not active until the fill, and shows the
-  receiver's posted stop when the entry tag carries one. A partially filled
-  entry keeps its P&L, stop and exits, and lists the filled amount against the
-  requested amount. Unfilled entries add no open notional and no stop risk.
+  receiver's posted stop when the entry tag carries one. A trade that holds any
+  quantity is never pending, even if an order record's fill lags behind its
+  amount. A partially filled entry keeps its P&L, stop and exits, and lists the
+  filled amount against the requested amount. Unfilled entries add no open
+  notional and no stop risk. The overview counts them separately ("N open
+  positions · M entry pending").
 - **Price action / All exits:** Price action autoscales the candles. All exits
   additionally includes entry, current-or-exit price and available exit levels
   in the price range. Both retain level lines; open positions also list their
@@ -242,10 +245,14 @@ pill shapes.
 ## Position close controls
 
 Each open chart has a text-labelled Close position control. While an entry
-order rests, Cancel entry order replaces it and uses the same dialog, guards and
-authentication. The order identity must still match, it must be the trade's only
-open order, and acceptance is not cancellation. A submitted action stays
-disabled for that trade only. A native modal dialog
+order rests with nothing filled, Cancel entry order replaces it and uses the same
+dialog, guards and authentication. The trade amount and every entry fill must be
+zero, the order identity must still match, and it must be the trade's only open
+order. Once any quantity fills, the dashboard offers no cancel and explains why.
+After the request, the backend fetches the trade again. It reports the order
+cancelled only when the order is gone and nothing filled; otherwise it reports
+"unconfirmed", never success. A submitted action stays disabled for that trade
+only. A native modal dialog
 provides protected confirmation focus, bot/market/side/quantity context and bot
 API authentication. Passwords are cleared after submission/dismissal and never
 stored in browser storage. Submission is disabled during and after accepted or

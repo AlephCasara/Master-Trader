@@ -32,7 +32,7 @@ class CancelEntry(BaseModel):
     request_id: UUID
     pair: str = Field(min_length=1, max_length=80)
     order_id: str = Field(min_length=1, max_length=200)
-    amount: float = Field(ge=0, allow_inf_nan=False)  # filled quantity the operator saw
+    amount: float = Field(ge=0, le=0, allow_inf_nan=False)  # only an entry with nothing filled
     open_timestamp: float = Field(gt=0, allow_inf_nan=False)
     is_short: bool
 
@@ -53,6 +53,26 @@ def connect():
 def _open_entry_orders(trade):
     entry_side = 'sell' if trade.get('is_short') else 'buy'
     return [o for o in trade.get('orders', []) if o.get('is_open') and o.get('ft_order_side') == entry_side]
+
+
+def _nothing_filled(trade):
+    """Trade amount 0 and every entry order reports filled 0. Missing data is not zero."""
+    entry_side = 'sell' if trade.get('is_short') else 'buy'
+    try:
+        return float(trade['amount']) == 0 and all(
+            float(o['filled']) == 0 for o in trade.get('orders', []) if o.get('ft_order_side') == entry_side)
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def _entry_cancel_confirmed(trade, order_id):
+    """After the DELETE: the trade is gone, or the order no longer rests and nothing filled."""
+    if trade is None:
+        return True  # Freqtrade removes a trade whose entry was cancelled before any fill.
+    if _open_entry_orders(trade) or not _nothing_filled(trade):
+        return False
+    order = next((o for o in trade.get('orders', []) if o.get('order_id') == order_id), None)
+    return order is None or str(order.get('status') or '').lower() in {'canceled', 'cancelled', 'expired', 'rejected'}
 
 
 def install(app, bots, auth):
@@ -157,10 +177,26 @@ def install(app, bots, auth):
             entries = _open_entry_orders(trade)
             if not entries:
                 return {'state': 'no_open_entry'}
+            # A partial or racing fill keeps a position that the receiver arms
+            # later, and Freqtrade may refuse a below-minimum partial cancel
+            # while still answering 200. Only an entry with no fill is cancelled here.
+            if not _nothing_filled(trade):
+                raise HTTPException(409, 'Part of this entry has filled, or the fill is not reported. The dashboard cancels only an entry with nothing filled; no cancel submitted')
             # Freqtrade's open-order route cancels every open order on the
             # trade, so refuse unless the only one is the confirmed entry.
             if (len(entries) != 1 or entries[0].get('order_id') != payload.order_id
                     or sum(1 for o in trade.get('orders', []) if o.get('is_open')) != 1):
                 raise HTTPException(409, 'Open orders changed. Refresh and review them again; no cancel submitted')
             reserve(bot_key, trade_id, payload, 'cancel-entry', 'A cancel request already exists. Check current orders before another action')
-            return await submit(payload, lambda: client.delete(bot['url'].rstrip('/') + f'/api/v1/trades/{trade_id}/open-order'))
+            # A 2xx is not confirmation: report cancelled only when a fresh
+            # snapshot shows the order gone and still nothing filled.
+            confirmed = False
+            try:
+                result = await client.delete(bot['url'].rstrip('/') + f'/api/v1/trades/{trade_id}/open-order')
+                if result.is_success:
+                    confirmed = _entry_cancel_confirmed(await snapshot(client, bot, trade_id, 'cancel unconfirmed'), payload.order_id)
+            except (httpx.HTTPError, HTTPException):
+                confirmed = False
+            with connect() as db:
+                db.execute('UPDATE actions SET state=? WHERE request_id=?', ('accepted' if confirmed else 'unknown', str(payload.request_id)))
+            return {'state': 'cancelled' if confirmed else 'unconfirmed', 'replayed': False}

@@ -35,13 +35,35 @@ def test_resting_entry_with_nothing_filled_is_pending():
     assert app._entry_state(PENDING, CFG) == {
         "state": "pending", "side": "buy", "order_id": "0xentry", "order_type": "limit",
         "price": 0.225, "requested": 413.0, "filled": 0.0, "placed_ts": PLACED_MS,
-        "expires_ts": PLACED_MS + 1440 * 60_000,
+        "expires_ts": PLACED_MS + 1440 * 60_000, "cancellable": True,
     }
 
 
 def test_partially_filled_entry_reports_filled_against_requested():
     state = app._entry_state(partial(), CFG)
     assert (state["state"], state["filled"], state["requested"]) == ("partial", 200.0, 413.0)
+
+
+def test_hyperliquid_lagging_order_never_hides_a_filled_position():
+    # Hyperliquid can report the trade amount before the order record's
+    # `filled` catches up. A trade that holds quantity is never "pending".
+    lagging = copy.deepcopy(PENDING)
+    lagging.update(amount=413.0, nr_of_successful_entries=1)
+    state = app._entry_state(lagging, CFG)
+    assert state["state"] == "filled" and not state.get("cancellable")
+    lagging["amount"] = 200.0
+    state = app._entry_state(lagging, CFG)
+    assert (state["state"], state["filled"], state["requested"], state["cancellable"]) == ("partial", 200.0, 413.0, False)
+
+
+def test_only_an_entry_with_no_fill_at_all_is_cancellable():
+    assert app._entry_state(PENDING, CFG)["cancellable"] is True
+    assert app._entry_state(partial(), CFG)["cancellable"] is False
+    # Fill amount not reported: still shown as pending, never cancellable.
+    unreported = copy.deepcopy(PENDING)
+    del unreported["orders"][0]["filled"]
+    state = app._entry_state(unreported, CFG)
+    assert (state["state"], state["cancellable"]) == ("pending", False)
 
 
 def test_short_entry_uses_sell_orders_and_seconds_timeout():

@@ -3,9 +3,10 @@ const fs=require('fs');const luminance=([r,g,b])=>{const [x,y,z]=[r,g,b].map(v=>
 (async()=>{
  const browser=await (process.env.BROWSER_ENGINE==='webkit'?webkit:chromium).launch(process.env.CHROME_CHANNEL&&process.env.BROWSER_ENGINE!=='webkit'?{channel:process.env.CHROME_CHANNEL}:{});const page=await browser.newPage({viewport:{width:1440,height:1000}});await page.addInitScript(()=>Object.defineProperty(navigator,'language',{get:()=> 'en-US@posix'}));const errors=[];page.on('pageerror',e=>errors.push(e.message));
  const fixture=require('./fixture.cjs')(); let closeRequests=0; const cancelRequests=[];
- await page.route('**/*',async route=>{const url=new URL(route.request().url());if(url.pathname.includes('alpine'))return route.fulfill({path:require.resolve('alpinejs/dist/cdn.min.js'),contentType:'text/javascript'});if(url.pathname.endsWith('/close')) {closeRequests++;return route.fulfill({json:{state:'accepted'}});}if(url.pathname.endsWith('/cancel-entry')){cancelRequests.push({path:url.pathname,action:route.request().headers()['x-trade-action'],body:route.request().postDataJSON()});return route.fulfill({json:{state:'accepted'}});}if(url.pathname.startsWith('/api/'))return route.fulfill({json:fixture.response(url.pathname)});if(url.pathname.startsWith('/static/'))return route.fulfill({path:root+url.pathname.slice(1)});if(url.hostname==='dashboard.test')return route.fulfill({body:fs.readFileSync(root+'templates/index.html','utf8').replace('master-trader<span>','master-trader · Preview<span>'),contentType:'text/html'});return route.abort();});
+ await page.route('**/*',async route=>{const url=new URL(route.request().url());if(url.pathname.includes('alpine'))return route.fulfill({path:require.resolve('alpinejs/dist/cdn.min.js'),contentType:'text/javascript'});if(url.pathname.endsWith('/close')) {closeRequests++;return route.fulfill({json:{state:'accepted'}});}if(url.pathname.endsWith('/cancel-entry')){cancelRequests.push({path:url.pathname,action:route.request().headers()['x-trade-action'],body:route.request().postDataJSON()});return route.fulfill({json:{state:'cancelled'}});}if(url.pathname.startsWith('/api/'))return route.fulfill({json:fixture.response(url.pathname)});if(url.pathname.startsWith('/static/'))return route.fulfill({path:root+url.pathname.slice(1)});if(url.hostname==='dashboard.test')return route.fulfill({body:fs.readFileSync(root+'templates/index.html','utf8').replace('master-trader<span>','master-trader · Preview<span>'),contentType:'text/html'});return route.abort();});
  await page.goto('https://dashboard.test/');await page.waitForTimeout(1800);
  await page.locator('details.workspace-research').evaluate(el=>{el.open=true});await page.waitForTimeout(300);
+ assert.match(await page.locator('main:visible .workspace-vitals').innerText(),/4 open positions · 1 entry pending/,'Pending entries are counted apart from positions');
  const recentLive=page.locator('details.workspace-research table.ledger');
  assert.equal((await recentLive.locator('thead th').nth(1).textContent()).trim(),'strategy','Merged live-bot ledger must name the bot');
  const recentBots=await recentLive.locator('tbody tr').evaluateAll(rows=>rows.map(row=>row.cells[1].textContent.trim()));
@@ -59,7 +60,16 @@ const fs=require('fs');const luminance=([r,g,b])=>{const [x,y,z]=[r,g,b].map(v=>
  assert.equal(pendingRows[0][1],'Limit buy 413 at 0.22500');assert.match(pendingRows[1][1],/^Since \d+-\d{2} \d{2}:\d{2} UTC \(3\.0h\)$/);
  assert.match(pendingRows[2][1],/ \(in 21\.0h\) · bot cancels it if still unfilled$/);assert.equal(pendingRows[3][1],'Now 0.23100 · the limit is -2.60% from here');
  assert.equal(pendingRows[4][1],'Not active until the entry fills · signal stop 0.20000 applies after the fill');
- assert.equal(await page.evaluate(()=>Alpine.$data(document.body).hero.openNotional),75,'A resting entry adds no exposure');
+ const hero=await page.evaluate(()=>{const h=Alpine.$data(document.body).hero;return [h.openNotional,h.openCount,h.pendingEntries];});
+ assert.deepEqual(hero,[87,4,1],'A resting entry is neither exposure nor an open position');
+ // Hyperliquid can report amount before the order record's fill: never pending then.
+ const lagging=await page.evaluate(()=>{const d=Alpine.$data(document.body);const list=d.raw.bots['killers-ft'].open_trades;list.push({...list.find(t=>t.trade_id===15),trade_id:16,pair:'SUI/USDC:USDC',amount:50});const row=d.openTradesAll.find(t=>t.trade_id===16);const out=[row.entry_pending,d.canCancelEntry(row),d.hero.pendingEntries];list.pop();return out;});
+ assert.deepEqual(lagging,[false,false,1]);
+ const partialCard=page.locator('.trade-card',{hasText:'OP/USDT'});
+ assert.equal((await partialCard.locator('.trade-reason').textContent()).trim(),'OPEN');assert.equal(await partialCard.locator('.trade-pnl').isVisible(),true);
+ assert.equal(await partialCard.getByRole('button',{name:/Cancel entry order|Close position/}).count(),0,'No dashboard cancel once any quantity fills');
+ assert.match(await partialCard.locator('.entry-order-note').textContent(),/^Dashboard cancel is off because part of this entry has filled/);
+ assert.equal(await pendingCard.locator('.entry-order-note').isVisible(),false);
  await page.evaluate(()=>Alpine.$data(document.body).setTab('bot:killers-ft'));await page.waitForTimeout(300);
  const pendingActivity=await page.locator('main:visible .arow',{hasText:'ENA'}).innerText();assert.match(pendingActivity,/entry pending/);assert.match(pendingActivity,/limit 0\.22500/);assert.doesNotMatch(pendingActivity,/\+0\.00%|100% open/);
  await page.evaluate(()=>Alpine.$data(document.body).setTab('trades'));await page.waitForTimeout(500);
@@ -68,7 +78,7 @@ const fs=require('fs');const luminance=([r,g,b])=>{const [x,y,z]=[r,g,b].map(v=>
  await pendingCard.getByRole('button',{name:'Cancel entry order…',exact:true}).click();
  assert.equal(await page.locator('#close-title').textContent(),'Cancel the resting entry order?');
  await page.getByLabel('Bot API password').fill('synthetic');await page.getByRole('button',{name:'Confirm cancel entry',exact:true}).click();
- await page.getByRole('status').filter({hasText:'Cancel request accepted'}).waitFor();
+ await page.getByRole('status').filter({hasText:'Entry order cancelled: the bot no longer reports it resting, and nothing filled.'}).waitFor();
  assert.deepEqual(cancelRequests.map(r=>[r.path,r.action,r.body.order_id,r.body.amount,r.body.pair]),[['/api/trades/killers-ft/15/cancel-entry','cancel-entry','synthetic-entry-15',0,'ENA/USDC:USDC']]);
  assert.equal(closeRequests,1);await page.getByRole('button',{name:'Dismiss',exact:true}).click();
  await pendingCard.getByRole('button',{name:'Cancel entry order…',exact:true}).click();
