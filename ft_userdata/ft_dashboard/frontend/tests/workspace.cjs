@@ -5,6 +5,11 @@ const fs=require('fs');const root=require('path').join(__dirname,'../../');const
  const fixture=require('./fixture.cjs')(); let closeRequests=0;
  await page.route('**/*',async route=>{const url=new URL(route.request().url());if(url.pathname.includes('alpine'))return route.fulfill({path:require.resolve('alpinejs/dist/cdn.min.js'),contentType:'text/javascript'});if(url.pathname.endsWith('/close')) {closeRequests++;return route.fulfill({json:{state:'accepted'}});}if(url.pathname.startsWith('/api/'))return route.fulfill({json:fixture.response(url.pathname)});if(url.pathname.startsWith('/static/'))return route.fulfill({path:root+url.pathname.slice(1)});if(url.hostname==='dashboard.test')return route.fulfill({body:fs.readFileSync(root+'templates/index.html','utf8').replace('master-trader<span>','master-trader · Preview<span>'),contentType:'text/html'});return route.abort();});
  await page.goto('https://dashboard.test/');await page.waitForTimeout(1800);
+ await page.locator('details.workspace-research').evaluate(el=>{el.open=true});await page.waitForTimeout(300);
+ const recentLive=page.locator('details.workspace-research table.ledger');
+ assert.equal((await recentLive.locator('thead th').nth(1).textContent()).trim(),'strategy','Merged live-bot ledger must name the bot');
+ const recentBots=await recentLive.locator('tbody tr').evaluateAll(rows=>rows.map(row=>row.cells[1].textContent.trim()));
+ assert.equal(recentBots.length,6);assert.deepEqual([...new Set(recentBots)].sort(),['funding-fade','keltner-bounce','killers-scalp']);
  await page.evaluate(()=>Alpine.$data(document.body).setTab('portfolio'));await page.waitForTimeout(500);
  assert.equal(await page.locator('#chart-portfolio-equity .analytics-plot').count(),1);
  assert.equal(await page.locator('#chart-portfolio-strategy tbody tr').count(),3);
