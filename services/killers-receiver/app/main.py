@@ -680,12 +680,15 @@ def find_active_position(
 
     Returns (position_dict_or_None, reason). `reason` is one of:
       'matched_by_signal_id' — exact signal_id + symbol match
-      'matched_by_symbol_unique' — fallback succeeded because only one
+      'matched_by_symbol_unique' — the message names no signal and only one
                                    active position for this symbol exists
+      'other_signal_only' — the message names a signal that holds no active
+                            position on this symbol, while another signal
+                            does. Never acted on (#96).
       'no_match' — no active position for this symbol at all
-      'ambiguous' — multiple active positions for this symbol; refuse
-                    to close blindly (closing the wrong trade is worse
-                    than missing the close).
+      'ambiguous' — the message names no signal and several active
+                    positions hold this symbol; refuse to close blindly
+                    (closing the wrong trade is worse than missing the close).
     """
     if signal_id is not None:
         row = conn.execute(
@@ -697,14 +700,21 @@ def find_active_position(
         if row:
             return dict(row), "matched_by_signal_id"
 
-    # Fallback by symbol — ONLY if exactly one active position exists.
-    # Otherwise we'd risk closing the wrong trade (codex review finding #3).
     rows = conn.execute(
         "SELECT * FROM positions "
         "WHERE symbol = ? AND state IN ('open', 'requested') "
         "ORDER BY open_date DESC",
         (symbol,),
     ).fetchall()
+    if signal_id is not None:
+        # #96: a message that names a signal acts on THAT signal's position
+        # or on nothing. Falling back by symbol here cannot tell "no signal
+        # named" from "the named signal's position is already gone and a
+        # newer signal now holds the coin", and closed the newer trade.
+        return None, ("other_signal_only" if rows else "no_match")
+
+    # Fallback by symbol for messages without a signal id — ONLY if exactly
+    # one active position exists (codex review finding #3).
     if len(rows) == 1:
         return dict(rows[0]), "matched_by_symbol_unique"
     if len(rows) > 1:
@@ -712,36 +722,42 @@ def find_active_position(
     return None, "no_match"
 
 
-def _prior_action_kind_for_msg(conn: sqlite3.Connection, pos: dict,
-                               msg_id, kind: str) -> Optional[str]:
-    """#64: at most ONE executing action per (position, source message).
+def _prior_action_for_msg(conn: sqlite3.Connection, pos: dict,
+                          msg_id, kind: str) -> Optional[tuple[int, str]]:
+    """#64/#96: at most ONE executing action per source message, message-wide.
 
     An edited Telegram message is re-forwarded with a fresh classification,
-    so UNIQUE(pos_id, msg_id, kind) alone lets one message act twice on the
-    same position if its kind changes between edits. Returns the kind that
-    message already acted as on this position (so the caller must NOT
-    execute), or None.
+    and the observer re-forwards on every edit, so UNIQUE(pos_id, msg_id,
+    kind) alone lets one message act twice: on the same position if its kind
+    changes between edits (#64), or on a second position once the first has
+    closed (#96). Every action path acts on exactly one position per message,
+    so a second action anywhere is never part of a legitimate instruction.
+    Returns (pos_id, kind) of the action the message already took (so the
+    caller must NOT execute), or None.
 
     Every `events` row is an executed or claimed action (only the open,
-    close_* and signal_update paths insert; chat/skipped/logged write none),
-    so any row counts. The position's own open message also counts even
-    before its 'open' row lands (that row is written after the FT await).
+    close_*, signal_update and move_sl paths insert; chat/skipped/logged
+    write none), so any row counts. A message that opened a position also
+    counts even before its 'open' row lands (that row is written after the
+    FT await).
 
-    A same-kind redelivery returns None so the caller's existing
+    A same-kind redelivery on the same position returns None so the caller's
     INSERT OR IGNORE dedupe path handles it unchanged. Synchronous — callers
     must run this and their claim INSERT with no await in between.
     """
-    kinds = [r[0] for r in conn.execute(
-        "SELECT kind FROM events WHERE pos_id = ? AND msg_id = ? "
-        "ORDER BY event_id",
-        (pos["pos_id"], msg_id),
-    ).fetchall()]
-    if kind in kinds:
+    rows = conn.execute(
+        "SELECT pos_id, kind FROM events WHERE msg_id = ? ORDER BY event_id",
+        (msg_id,),
+    ).fetchall()
+    if any(r["pos_id"] == pos["pos_id"] and r["kind"] == kind for r in rows):
         return None
-    if kinds:
-        return kinds[0]
-    if pos.get("open_msg_id") is not None and pos.get("open_msg_id") == msg_id:
-        return "open"
+    if rows:
+        return rows[0]["pos_id"], rows[0]["kind"]
+    opener = conn.execute(
+        "SELECT pos_id FROM positions WHERE open_msg_id = ? LIMIT 1", (msg_id,),
+    ).fetchone()
+    if opener is not None:
+        return opener["pos_id"], "open"
     return None
 
 
@@ -761,15 +777,36 @@ def _open_edit_refusal(conn: sqlite3.Connection, msg_id, kind: str) -> Optional[
                                 prior["kind"])
 
 
-def _kind_change_deduped(pos: dict, msg_id, kind: str, prior_kind: str) -> dict:
-    logger.warning(
-        "[EDIT KIND-CHANGE IGNORED] msg_id=%s pos_id=%d already acted as %s; "
-        "edited delivery as %s NOT executed", msg_id, pos["pos_id"],
-        prior_kind, kind)
-    return {"action": "deduped",
-            "reason": (f"msg already acted as {prior_kind} on this position "
-                       f"(edited message, kind changed to {kind})"),
-            "pos_id": pos["pos_id"], "kind": kind, "prior_kind": prior_kind}
+def _kind_change_deduped(pos: dict, msg_id, kind: str, prior_kind: str,
+                         prior_pos_id: Optional[int] = None) -> dict:
+    if prior_pos_id is None:
+        prior_pos_id = pos["pos_id"]
+    if prior_pos_id == pos["pos_id"]:
+        logger.warning(
+            "[EDIT KIND-CHANGE IGNORED] msg_id=%s pos_id=%d already acted as %s; "
+            "edited delivery as %s NOT executed", msg_id, pos["pos_id"],
+            prior_kind, kind)
+        reason = (f"msg already acted as {prior_kind} on this position "
+                  f"(edited message, kind changed to {kind})")
+    else:
+        logger.warning(
+            "[SECOND ACTION REFUSED] msg_id=%s already acted as %s on pos_id=%d; "
+            "delivery as %s on pos_id=%d NOT executed", msg_id, prior_kind,
+            prior_pos_id, kind, pos["pos_id"])
+        reason = (f"msg already acted as {prior_kind} on pos {prior_pos_id}; "
+                  f"refusing {kind} on pos {pos['pos_id']}")
+    return {"action": "deduped", "reason": reason,
+            "pos_id": pos["pos_id"], "kind": kind, "prior_kind": prior_kind,
+            "prior_pos_id": prior_pos_id}
+
+
+def _refuse_if_msg_already_acted(conn: sqlite3.Connection, pos: dict,
+                                 msg_id, kind: str) -> Optional[dict]:
+    """Synchronous #64/#96 gate: the deduped result to return, or None."""
+    prior = _prior_action_for_msg(conn, pos, msg_id, kind)
+    if prior is None:
+        return None
+    return _kind_change_deduped(pos, msg_id, kind, prior[1], prior[0])
 
 
 # ── Sizing ─────────────────────────────────────────────────────────────────
@@ -2549,6 +2586,12 @@ def _format_event_summary(cfg: Config, payload: EventPayload, result: dict) -> O
     # #64: an edit that changed the kind of a message that already acted is
     # NOT executed — surface it, the operator may need to act by hand.
     if action == "deduped" and result.get("prior_kind"):
+        prior_pos = result.get("prior_pos_id")
+        if prior_pos is not None and prior_pos != result.get("pos_id"):
+            # #96: the message already acted on a DIFFERENT position.
+            return (f"⚠ {head} SECOND ACTION REFUSED · #{sig} {kind} {sym}  · "
+                    f"pos={result.get('pos_id', '?')} untouched · msg already "
+                    f"acted as {result['prior_kind']} on pos={prior_pos}")
         return (f"⚠ {head} EDIT IGNORED · #{sig} {kind} {sym}  · "
                 f"pos={result.get('pos_id', '?')} · msg already acted as "
                 f"{result['prior_kind']}")
@@ -3258,9 +3301,9 @@ async def _process_event_inner(payload: EventPayload, phase2_locked=False):
             "pending": True,
         })
         # #64: no await between this check and the claim below.
-        prior_kind = _prior_action_kind_for_msg(conn, pos, msg_id, kind)
-        if prior_kind is not None:
-            return _kind_change_deduped(pos, msg_id, kind, prior_kind)
+        refused = _refuse_if_msg_already_acted(conn, pos, msg_id, kind)
+        if refused is not None:
+            return refused
         claim = conn.execute(
             "INSERT OR IGNORE INTO events "
             "(pos_id, msg_id, event_at, kind, payload, response) "
@@ -3512,9 +3555,9 @@ async def _process_event_inner(payload: EventPayload, phase2_locked=False):
             "pending": True,
         })
         # #64: no await between this check and the claim below.
-        prior_kind = _prior_action_kind_for_msg(conn, pos, msg_id, kind)
-        if prior_kind is not None:
-            return _kind_change_deduped(pos, msg_id, kind, prior_kind)
+        refused = _refuse_if_msg_already_acted(conn, pos, msg_id, kind)
+        if refused is not None:
+            return refused
         claim = conn.execute(
             "INSERT OR IGNORE INTO events "
             "(pos_id, msg_id, event_at, kind, payload, response) "
@@ -3885,10 +3928,37 @@ async def _process_event_inner(payload: EventPayload, phase2_locked=False):
             if loosens:
                 return {"action": "skipped", "reason": "move_sl_would_loosen"}
 
-        conn.execute(
-            "UPDATE positions SET sl_abs=?, last_event_at=? WHERE pos_id=?",
-            (new_sl, datetime.now(timezone.utc).isoformat(), pos["pos_id"]),
-        )
+        # #96: a moved stop is this message's one action. It changes sl_abs,
+        # which the posted-SL check and Freqtrade's custom_stoploss act on,
+        # so it is recorded and gated like a close. No await from here on.
+        refused = _refuse_if_msg_already_acted(conn, pos, msg_id, kind)
+        if refused is not None:
+            return refused
+        now_iso = datetime.now(timezone.utc).isoformat()
+        conn.execute("BEGIN")
+        try:
+            claim = conn.execute(
+                "INSERT OR IGNORE INTO events "
+                "(pos_id, msg_id, event_at, kind, payload, response) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (pos["pos_id"], msg_id, now_iso, kind,
+                 json.dumps({"ft_trade_id": pos["ft_trade_id"],
+                             "old_sl": old_sl, "new_sl": new_sl, "mark": mark}),
+                 json.dumps({"status": "applied"})),
+            )
+            if claim.rowcount == 0:
+                conn.execute("ROLLBACK")
+                logger.info("[MOVE SL DUPE] msg_id=%d pos_id=%d — already applied",
+                            msg_id, pos["pos_id"])
+                return {"action": "deduped", "pos_id": pos["pos_id"], "kind": kind}
+            conn.execute(
+                "UPDATE positions SET sl_abs=?, last_event_at=? WHERE pos_id=?",
+                (new_sl, now_iso, pos["pos_id"]),
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
         logger.info(
             "[MOVE SL] pos_id=%d %s %s old=%s new=%s",
             pos["pos_id"], symbol, direction.upper(), old_sl, new_sl,
