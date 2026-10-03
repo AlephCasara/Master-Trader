@@ -11,7 +11,11 @@ Contract pinned here:
   - a value no Binance cap allows (beyond ±3%), a NaN or a malformed string is
     quarantined for that row only, logged as QUARANTINE, and the rest of the
     batch is saved;
-  - across repeated incremental runs the file keeps advancing.
+  - across repeated incremental runs the file keeps advancing;
+  - each refresh run sends at most one best-effort Telegram alert (trade-webhook
+    /test/notify) listing its newly quarantined rows; a row re-fetched by the
+    24h rewind is not re-alerted, a failed delivery is retried next run, and a
+    failed alert never fails the refresh.
 
 Feather I/O needs pyarrow, which the CI requirements do not install, so the
 tests swap feather for pickle. Everything else in save_pair runs as written.
@@ -21,9 +25,12 @@ import importlib.util
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
+import requests
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 EVENT_MS = 8 * 3600 * 1000
@@ -43,6 +50,8 @@ def dl(monkeypatch, tmp_path):
     monkeypatch.setattr(module.pd, "read_feather", pd.read_pickle)
     module.logged = []
     monkeypatch.setattr(module, "log", module.logged.append)
+    monkeypatch.delenv("FUNDING_NOTIFY_URL", raising=False)
+    monkeypatch.delenv("TRADE_WEBHOOK_NOTIFY_TOKEN", raising=False)
     return module
 
 
@@ -137,3 +146,166 @@ def test_incremental_runs_keep_advancing_past_bad_rows(dl, monkeypatch):
     assert by_date[pd.Timestamp("2026-09-04T00:00Z")] == pytest.approx(-0.016397)
     assert pd.Timestamp("2026-09-04T08:00Z") not in by_date
     assert len(df) == 20  # events 0-20 less the quarantined one
+
+
+# ── Telegram alert through trade-webhook /test/notify ───────────────────
+
+NOTIFY_URL = "http://trade-webhook:8088/test/notify"
+
+
+class Outbox:
+    """Stands in for requests.post; `respond` is a status code or an exception."""
+
+    def __init__(self):
+        self.sent = []
+        self.respond = 200
+
+    def post(self, url, json=None, headers=None, timeout=None):
+        self.sent.append({"url": url, "text": json["text"], "headers": headers})
+        if isinstance(self.respond, Exception):
+            raise self.respond
+        return SimpleNamespace(status_code=self.respond)
+
+
+@pytest.fixture
+def outbox(dl, monkeypatch):
+    box = Outbox()
+    monkeypatch.setattr(dl.requests, "post", box.post)
+    monkeypatch.setenv("FUNDING_NOTIFY_URL", NOTIFY_URL)
+    return box
+
+
+def _run(dl, monkeypatch, rates_by_pair, end_day):
+    """One `--incremental` refresh run over rates_by_pair ({pair: {event: rate}})."""
+    def fake_fetch(symbol, start_ms, end_ms):
+        pair = next(p for p in rates_by_pair if p.replace("/", "") == symbol)
+        return [
+            {"symbol": symbol, "fundingTime": T0_MS + i * EVENT_MS, "fundingRate": r}
+            for i, r in rates_by_pair[pair].items()
+            if start_ms <= T0_MS + i * EVENT_MS < end_ms
+        ]
+
+    monkeypatch.setattr(dl, "fetch_funding_history", fake_fetch)
+    monkeypatch.setattr(sys, "argv", [
+        "download_funding_rates.py", "--incremental", "--pairs", ",".join(rates_by_pair),
+        "--start", "20260901", "--end", end_day,
+    ])
+    dl.main()
+
+
+def _series(bad):
+    rates = {i: "0.00010000" for i in range(30)}
+    rates.update(bad)
+    return rates
+
+
+def test_one_alert_per_run_lists_every_quarantined_row(dl, monkeypatch, outbox):
+    _run(dl, monkeypatch, {
+        "ZEC/USDT": _series({9: "0.25000000", 11: "abc"}),
+        "SOL/USDT": _series({10: "NaN"}),
+        "BTC/USDT": _series({}),
+    }, "20260905")
+
+    assert len(outbox.sent) == 1
+    msg = outbox.sent[0]
+    assert msg["url"] == NOTIFY_URL
+    assert msg["headers"] is None  # no token configured
+    assert "FUNDING QUARANTINE" in msg["text"] and "3 row(s)" in msg["text"]
+    assert "ZEC/USDT 2026-09-04T00:00Z = '0.25000000'" in msg["text"]
+    assert "ZEC/USDT 2026-09-04T16:00Z = 'abc'" in msg["text"]
+    assert "SOL/USDT 2026-09-04T08:00Z = 'NaN'" in msg["text"]
+    assert "BTC/USDT" not in msg["text"]
+    # The files still advanced past the quarantined rows.
+    assert _feather(dl, "ZEC/USDT")["date"].iloc[-1] == pd.Timestamp("2026-09-04T08:00Z")
+    assert _feather(dl, "SOL/USDT")["date"].iloc[-1] == pd.Timestamp("2026-09-04T16:00Z")
+
+
+def test_rewound_row_is_not_realerted_but_a_new_one_is(dl, monkeypatch, outbox):
+    rates = {"ZEC/USDT": _series({10: "0.25000000", 13: "-0.50000000"})}
+
+    _run(dl, monkeypatch, rates, "20260905")  # events 0-11: 10 is new
+    _run(dl, monkeypatch, rates, "20260906")  # rewind re-fetches 10; 13 is new
+    _run(dl, monkeypatch, rates, "20260906")  # both re-fetched, nothing new
+
+    assert len(outbox.sent) == 2
+    assert "2026-09-04T08:00Z" in outbox.sent[0]["text"]
+    assert "2026-09-04T08:00Z" not in outbox.sent[1]["text"]
+    assert "ZEC/USDT 2026-09-05T08:00Z = '-0.50000000'" in outbox.sent[1]["text"]
+    assert "1 row(s)" in outbox.sent[1]["text"]
+
+
+@pytest.mark.parametrize("token", [None, "t" * 32])
+def test_notify_token_header_only_when_configured(dl, monkeypatch, outbox, token):
+    if token:
+        monkeypatch.setenv("TRADE_WEBHOOK_NOTIFY_TOKEN", token)
+
+    _run(dl, monkeypatch, {"ZEC/USDT": _series({10: "0.25"})}, "20260905")
+
+    assert outbox.sent[0]["headers"] == ({"X-Notify-Token": token} if token else None)
+    assert not any(token and token in line for line in dl.logged)
+
+
+@pytest.mark.parametrize("failure", [requests.ConnectionError("refused"), 500, 401])
+def test_failed_alert_never_fails_refresh_and_retries(dl, monkeypatch, outbox, failure):
+    rates = {"ZEC/USDT": _series({10: "0.25"})}
+    outbox.respond = failure
+
+    _run(dl, monkeypatch, rates, "20260905")  # must not raise
+
+    assert _feather(dl)["date"].iloc[-1] == pd.Timestamp("2026-09-04T16:00Z")
+    assert any("will retry next run" in line for line in dl.logged)
+    if failure == 401:
+        assert any("TRADE_WEBHOOK_NOTIFY_TOKEN" in line for line in dl.logged)
+
+    outbox.respond = 200
+    _run(dl, monkeypatch, rates, "20260906")  # rewind re-fetches 10: delivered now
+
+    assert len(outbox.sent) == 2
+    assert "2026-09-04T08:00Z" in outbox.sent[1]["text"]
+
+
+def test_unexpected_alert_error_never_fails_refresh(dl, monkeypatch, outbox):
+    def boom(_rows):
+        raise RuntimeError("bug in the alert path")
+
+    monkeypatch.setattr(dl, "notify_quarantine", boom)
+
+    _run(dl, monkeypatch, {"ZEC/USDT": _series({10: "0.25"})}, "20260905")
+
+    assert _feather(dl)["date"].iloc[-1] == pd.Timestamp("2026-09-04T16:00Z")
+    assert any("quarantine alert failed" in line for line in dl.logged)
+
+
+def test_unreadable_alert_state_alerts_rather_than_stays_silent(dl, monkeypatch, outbox):
+    (dl.FUNDING_DIR / dl._ALERTED_FILE).write_text("{not json")
+
+    _run(dl, monkeypatch, {"ZEC/USDT": _series({10: "0.25"})}, "20260905")
+
+    assert len(outbox.sent) == 1
+
+
+def test_no_alert_without_url_or_without_quarantine(dl, monkeypatch, outbox):
+    _run(dl, monkeypatch, {"ZEC/USDT": _series({})}, "20260905")
+    assert outbox.sent == []
+
+    monkeypatch.delenv("FUNDING_NOTIFY_URL")
+    _run(dl, monkeypatch, {"ZEC/USDT": _series({12: "0.25"})}, "20260906")
+    assert outbox.sent == []
+    assert any("QUARANTINE ZEC/USDT" in line for line in dl.logged)
+
+
+def test_prod_compose_wires_funding_refresh_to_trade_webhook():
+    prod = yaml.safe_load((ROOT / "ft_userdata" / "docker-compose.prod.yml").read_text())
+    refresh = prod["services"]["funding-refresh"]
+    assert refresh["environment"]["FUNDING_NOTIFY_URL"] == NOTIFY_URL
+    assert refresh["environment"]["TRADE_WEBHOOK_NOTIFY_TOKEN"] == "${TRADE_WEBHOOK_NOTIFY_TOKEN:-}"
+    # Reachability: funding-refresh stays on the project's default network, which
+    # trade-webhook joins as an external network under the project's name.
+    assert "networks" not in refresh
+    webhook = yaml.safe_load(
+        (ROOT / "services" / "trade-webhook" / "docker-compose.yml").read_text()
+    )
+    assert "master-trader-net" in webhook["services"]["trade-webhook"]["networks"]
+    assert webhook["networks"]["master-trader-net"]["name"] == (
+        "compose-bypass-mobile-port-fbk1m6_default"
+    )
