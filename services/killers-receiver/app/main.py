@@ -527,10 +527,15 @@ CREATE TABLE IF NOT EXISTS ingress_events (
     signal_id    INTEGER,
     raw_payload  TEXT NOT NULL,              -- full {msg, classification} json
     final_action TEXT,                       -- handler outcome (force_enter,
-                                              -- skipped, audit_only, ignored,
-                                              -- error, or NULL if crashed)
+                                              -- entry_rejected, force_exit,
+                                              -- exit_rejected, skipped,
+                                              -- audit_only, ignored, error,
+                                              -- or NULL if crashed)
     final_status INTEGER,                    -- HTTP status returned to observer
-    completed_at TEXT
+    completed_at TEXT,
+    executor_status INTEGER,                 -- Freqtrade status of the call this
+                                              -- delivery made (NULL: no call)
+    executor_error TEXT                      -- Freqtrade error when not 2xx
 );
 CREATE INDEX IF NOT EXISTS idx_ingress_kind ON ingress_events(kind);
 CREATE INDEX IF NOT EXISTS idx_ingress_action ON ingress_events(final_action);
@@ -554,7 +559,9 @@ CREATE TABLE IF NOT EXISTS ingress_revisions (
     raw_payload   TEXT NOT NULL,             -- full {msg, classification} json
     final_action  TEXT,                      -- this delivery's own outcome
     final_status  INTEGER,                   -- NULL if the handler died
-    completed_at  TEXT
+    completed_at  TEXT,
+    executor_status INTEGER,                 -- as ingress_events (#125)
+    executor_error  TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_ingress_rev_msg ON ingress_revisions(msg_id, rev_id);
 
@@ -586,6 +593,32 @@ CREATE TABLE IF NOT EXISTS target_orders (
 );
 CREATE INDEX IF NOT EXISTS idx_target_orders_pos ON target_orders(pos_id, state);
 CREATE INDEX IF NOT EXISTS idx_target_orders_state ON target_orders(state);
+
+CREATE TABLE IF NOT EXISTS exit_requests (
+    -- #126: every non-ladder exit the receiver submits to Freqtrade, with
+    -- WHY. Freqtrade 2026.7's /forceexit accepts no exit tag, so all of them
+    -- (and an operator's manual close) land as exit_reason=force_exit.
+    -- attribute_exit_orders() maps Freqtrade's exit orders back to these
+    -- rows and to target_orders (the TP ladder ledger).
+    request_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+    pos_id       INTEGER REFERENCES positions(pos_id),
+    ft_trade_id  INTEGER NOT NULL,
+    reason       TEXT NOT NULL,     -- channel_close | channel_partial_close |
+                                    -- signal_update_close | signal_update_tp1 |
+                                    -- posted_sl
+    msg_id       INTEGER,           -- source channel message (NULL: posted_sl)
+    ordertype    TEXT NOT NULL,     -- market | limit
+    submitted_at TEXT NOT NULL,     -- written before the /forceexit await
+    answered_at  TEXT,              -- NULL if the call raised
+    ft_status    INTEGER,
+    ft_order_id  TEXT               -- when the receiver identified the order
+);
+CREATE INDEX IF NOT EXISTS idx_exit_requests_pos ON exit_requests(pos_id);
+
+CREATE TABLE IF NOT EXISTS receiver_meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
 # Default partial-close pct when the signal doesn't specify ("TP1 hit", "took
@@ -603,8 +636,22 @@ def init_db(path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(path, isolation_level=None)
     conn.row_factory = sqlite3.Row
     conn.executescript(POSITION_SCHEMA)
+    # #126: exits submitted from here on are recorded in exit_requests, so a
+    # force_exit order older than this cannot be told apart from a manual one.
+    conn.execute(
+        "INSERT OR IGNORE INTO receiver_meta (key, value) VALUES ('exit_ledger_since', ?)",
+        (datetime.now(timezone.utc).isoformat(),),
+    )
     from .tp_migration import SCHEMA as MIGRATION_SCHEMA
     conn.executescript(MIGRATION_SCHEMA)
+    # #125: executor outcome columns on the ingress audit. NULL on rows
+    # written before the migration; existing rows are never rewritten.
+    for table in ("ingress_events", "ingress_revisions"):
+        cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        for column, ctype in (("executor_status", "INTEGER"),
+                              ("executor_error", "TEXT")):
+            if column not in cols:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ctype}")
     target_columns = {r[1] for r in conn.execute("PRAGMA table_info(target_orders)")}
     for column in ("submitted_at", "prior_order_ids"):
         if column not in target_columns:
@@ -680,12 +727,15 @@ def find_active_position(
 
     Returns (position_dict_or_None, reason). `reason` is one of:
       'matched_by_signal_id' — exact signal_id + symbol match
-      'matched_by_symbol_unique' — fallback succeeded because only one
+      'matched_by_symbol_unique' — the message names no signal and only one
                                    active position for this symbol exists
+      'other_signal_only' — the message names a signal that holds no active
+                            position on this symbol, while another signal
+                            does. Never acted on (#96).
       'no_match' — no active position for this symbol at all
-      'ambiguous' — multiple active positions for this symbol; refuse
-                    to close blindly (closing the wrong trade is worse
-                    than missing the close).
+      'ambiguous' — the message names no signal and several active
+                    positions hold this symbol; refuse to close blindly
+                    (closing the wrong trade is worse than missing the close).
     """
     if signal_id is not None:
         row = conn.execute(
@@ -697,14 +747,21 @@ def find_active_position(
         if row:
             return dict(row), "matched_by_signal_id"
 
-    # Fallback by symbol — ONLY if exactly one active position exists.
-    # Otherwise we'd risk closing the wrong trade (codex review finding #3).
     rows = conn.execute(
         "SELECT * FROM positions "
         "WHERE symbol = ? AND state IN ('open', 'requested') "
         "ORDER BY open_date DESC",
         (symbol,),
     ).fetchall()
+    if signal_id is not None:
+        # #96: a message that names a signal acts on THAT signal's position
+        # or on nothing. Falling back by symbol here cannot tell "no signal
+        # named" from "the named signal's position is already gone and a
+        # newer signal now holds the coin", and closed the newer trade.
+        return None, ("other_signal_only" if rows else "no_match")
+
+    # Fallback by symbol for messages without a signal id — ONLY if exactly
+    # one active position exists (codex review finding #3).
     if len(rows) == 1:
         return dict(rows[0]), "matched_by_symbol_unique"
     if len(rows) > 1:
@@ -712,36 +769,42 @@ def find_active_position(
     return None, "no_match"
 
 
-def _prior_action_kind_for_msg(conn: sqlite3.Connection, pos: dict,
-                               msg_id, kind: str) -> Optional[str]:
-    """#64: at most ONE executing action per (position, source message).
+def _prior_action_for_msg(conn: sqlite3.Connection, pos: dict,
+                          msg_id, kind: str) -> Optional[tuple[int, str]]:
+    """#64/#96: at most ONE executing action per source message, message-wide.
 
     An edited Telegram message is re-forwarded with a fresh classification,
-    so UNIQUE(pos_id, msg_id, kind) alone lets one message act twice on the
-    same position if its kind changes between edits. Returns the kind that
-    message already acted as on this position (so the caller must NOT
-    execute), or None.
+    and the observer re-forwards on every edit, so UNIQUE(pos_id, msg_id,
+    kind) alone lets one message act twice: on the same position if its kind
+    changes between edits (#64), or on a second position once the first has
+    closed (#96). Every action path acts on exactly one position per message,
+    so a second action anywhere is never part of a legitimate instruction.
+    Returns (pos_id, kind) of the action the message already took (so the
+    caller must NOT execute), or None.
 
     Every `events` row is an executed or claimed action (only the open,
-    close_* and signal_update paths insert; chat/skipped/logged write none),
-    so any row counts. The position's own open message also counts even
-    before its 'open' row lands (that row is written after the FT await).
+    close_*, signal_update and move_sl paths insert; chat/skipped/logged
+    write none), so any row counts. A message that opened a position also
+    counts even before its 'open' row lands (that row is written after the
+    FT await).
 
-    A same-kind redelivery returns None so the caller's existing
+    A same-kind redelivery on the same position returns None so the caller's
     INSERT OR IGNORE dedupe path handles it unchanged. Synchronous — callers
     must run this and their claim INSERT with no await in between.
     """
-    kinds = [r[0] for r in conn.execute(
-        "SELECT kind FROM events WHERE pos_id = ? AND msg_id = ? "
-        "ORDER BY event_id",
-        (pos["pos_id"], msg_id),
-    ).fetchall()]
-    if kind in kinds:
+    rows = conn.execute(
+        "SELECT pos_id, kind FROM events WHERE msg_id = ? ORDER BY event_id",
+        (msg_id,),
+    ).fetchall()
+    if any(r["pos_id"] == pos["pos_id"] and r["kind"] == kind for r in rows):
         return None
-    if kinds:
-        return kinds[0]
-    if pos.get("open_msg_id") is not None and pos.get("open_msg_id") == msg_id:
-        return "open"
+    if rows:
+        return rows[0]["pos_id"], rows[0]["kind"]
+    opener = conn.execute(
+        "SELECT pos_id FROM positions WHERE open_msg_id = ? LIMIT 1", (msg_id,),
+    ).fetchone()
+    if opener is not None:
+        return opener["pos_id"], "open"
     return None
 
 
@@ -761,15 +824,36 @@ def _open_edit_refusal(conn: sqlite3.Connection, msg_id, kind: str) -> Optional[
                                 prior["kind"])
 
 
-def _kind_change_deduped(pos: dict, msg_id, kind: str, prior_kind: str) -> dict:
-    logger.warning(
-        "[EDIT KIND-CHANGE IGNORED] msg_id=%s pos_id=%d already acted as %s; "
-        "edited delivery as %s NOT executed", msg_id, pos["pos_id"],
-        prior_kind, kind)
-    return {"action": "deduped",
-            "reason": (f"msg already acted as {prior_kind} on this position "
-                       f"(edited message, kind changed to {kind})"),
-            "pos_id": pos["pos_id"], "kind": kind, "prior_kind": prior_kind}
+def _kind_change_deduped(pos: dict, msg_id, kind: str, prior_kind: str,
+                         prior_pos_id: Optional[int] = None) -> dict:
+    if prior_pos_id is None:
+        prior_pos_id = pos["pos_id"]
+    if prior_pos_id == pos["pos_id"]:
+        logger.warning(
+            "[EDIT KIND-CHANGE IGNORED] msg_id=%s pos_id=%d already acted as %s; "
+            "edited delivery as %s NOT executed", msg_id, pos["pos_id"],
+            prior_kind, kind)
+        reason = (f"msg already acted as {prior_kind} on this position "
+                  f"(edited message, kind changed to {kind})")
+    else:
+        logger.warning(
+            "[SECOND ACTION REFUSED] msg_id=%s already acted as %s on pos_id=%d; "
+            "delivery as %s on pos_id=%d NOT executed", msg_id, prior_kind,
+            prior_pos_id, kind, pos["pos_id"])
+        reason = (f"msg already acted as {prior_kind} on pos {prior_pos_id}; "
+                  f"refusing {kind} on pos {pos['pos_id']}")
+    return {"action": "deduped", "reason": reason,
+            "pos_id": pos["pos_id"], "kind": kind, "prior_kind": prior_kind,
+            "prior_pos_id": prior_pos_id}
+
+
+def _refuse_if_msg_already_acted(conn: sqlite3.Connection, pos: dict,
+                                 msg_id, kind: str) -> Optional[dict]:
+    """Synchronous #64/#96 gate: the deduped result to return, or None."""
+    prior = _prior_action_for_msg(conn, pos, msg_id, kind)
+    if prior is None:
+        return None
+    return _kind_change_deduped(pos, msg_id, kind, prior[1], prior[0])
 
 
 # ── Sizing ─────────────────────────────────────────────────────────────────
@@ -1775,6 +1859,210 @@ def _find_matching_order(orders: list[dict], ft_order_id: Optional[str],
     return candidates[0][1]
 
 
+# ── Exit attribution (#126) ───────────────────────────────────────────────
+
+# Freqtrade creates a /forceexit order inside the REST call (under its exit
+# lock), so the order's timestamp falls between our submit and its answer.
+# The slack covers exchange vs host clock skew.
+_EXIT_MATCH_SLACK_SEC = 5.0
+# A call that raised has no answer time; the client timeout is 10s.
+_EXIT_UNANSWERED_WINDOW_SEC = 30.0
+
+
+def _record_exit_request(conn: sqlite3.Connection, pos: dict, reason: str,
+                         msg_id, ordertype: str) -> Optional[int]:
+    """Write the intent BEFORE the /forceexit await. Never breaks the exit."""
+    try:
+        cur = conn.execute(
+            "INSERT INTO exit_requests (pos_id, ft_trade_id, reason, msg_id, "
+            "ordertype, submitted_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (pos.get("pos_id"), pos["ft_trade_id"], reason, msg_id, ordertype,
+             datetime.now(timezone.utc).isoformat()),
+        )
+        return cur.lastrowid
+    except Exception:
+        logger.exception("exit_requests insert failed pos_id=%s reason=%s",
+                         pos.get("pos_id"), reason)
+        return None
+
+
+def _finish_exit_request(conn: sqlite3.Connection, request_id: Optional[int],
+                         resp: Optional[dict], ft_order_id=None) -> None:
+    """Stamp Freqtrade's answer, or (resp=None) only the identified order."""
+    if request_id is None:
+        return
+    try:
+        if resp is None:
+            if ft_order_id:
+                conn.execute("UPDATE exit_requests SET ft_order_id=? WHERE request_id=?",
+                             (str(ft_order_id), request_id))
+            return
+        status = resp.get("status")
+        conn.execute(
+            "UPDATE exit_requests SET answered_at=?, ft_status=? WHERE request_id=?",
+            (datetime.now(timezone.utc).isoformat(),
+             status if isinstance(status, int) else None, request_id),
+        )
+    except Exception:
+        logger.exception("exit_requests update failed request_id=%s", request_id)
+
+
+def _iso_to_ms(value) -> Optional[float]:
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp() * 1000
+
+
+def _tp_label(row: dict, signal_targets: list) -> str:
+    """`tp<n>`: n is the target's 1-based place on the signal's posted
+    ladder. target_orders.idx is not that number in the legacy planner (it
+    indexes the targets still ahead at entry), and order prices are rounded
+    to the venue tick, so match the nearest posted target within 1%."""
+    try:
+        price = float(row["price"])
+    except (KeyError, TypeError, ValueError):
+        return "tp"
+    best = None
+    for n, target in enumerate(signal_targets or [], 1):
+        try:
+            rel = abs(float(target) - price) / float(target)
+        except (TypeError, ValueError, ZeroDivisionError):
+            continue
+        if rel <= 0.01 and (best is None or rel < best[1]):
+            best = (n, rel)
+    return f"tp{best[0]}" if best else f"tp@{price:g}"
+
+
+def _exit_request_refused(status) -> bool:
+    """An explicit Freqtrade refusal: 4xx, or 502, which its API returns for
+    an RPCException raised before any exit order is created. NULL (the call
+    raised), 0 (transport/synthetic) and other 5xx (an unhandled error that
+    may follow the order write) stay unknown and may still own an order."""
+    return isinstance(status, int) and (400 <= status < 500 or status == 502)
+
+
+def attribute_exit_orders(trade: dict, target_rows: list, requests: list,
+                          signal_targets: list,
+                          ledger_since: Optional[str]) -> list[dict]:
+    """Label every exit-side order on a Freqtrade trade with why it exists.
+
+    Order of evidence, all positive records rather than guesses:
+      1. order id recorded on an exit_requests row (signal_update TP1 limit)
+      2. order id recorded on a target_orders row → `tp<n>` (the TP ladder)
+      3. Freqtrade's own stop order or its own non-force_exit tag
+         (`stoploss_on_exchange`, `liquidation`, ...)
+      4. a receiver submission (exit_requests row, or a TP row whose order id
+         was never observed) whose submit→answer window contains the order.
+         Freqtrade does not echo a market exit's order id, and Hyperliquid
+         market orders are recorded as `limit`, so the window is the match.
+         Submissions Freqtrade explicitly refused are not candidates; an
+         accepted one outranks one whose outcome is unknown.
+      5. otherwise a force_exit order is `manual`: every receiver-submitted
+         exit is in 1, 2 or 4, so it was placed outside the receiver. Orders
+         older than the ledger (`exit_ledger_since`) are `unattributed`.
+    """
+    short = bool(trade.get("is_short"))
+    exit_side = "buy" if short else "sell"
+    tp_by_order = {str(r["ft_order_id"]): r for r in target_rows
+                   if r.get("ft_order_id")}
+    req_by_order = {str(r["ft_order_id"]): r for r in requests
+                    if r.get("ft_order_id")}
+    slack = _EXIT_MATCH_SLACK_SEC * 1000
+    # Submissions whose order the receiver never identified. One that did
+    # record an id owns that order only (rules 1-2), never a neighbour.
+    windows = []
+    for req in requests:
+        if req.get("ft_order_id"):
+            continue
+        start = _iso_to_ms(req.get("submitted_at"))
+        if start is None:
+            continue
+        end = _iso_to_ms(req.get("answered_at"))
+        status = req.get("ft_status")
+        if _exit_request_refused(status):
+            continue  # Freqtrade said no: it owns no order, never a neighbour's
+        windows.append({
+            "key": ("request", req["request_id"]), "reason": req["reason"],
+            "request_id": req["request_id"],
+            "start": start - slack,
+            "end": (end if end is not None
+                    else start + _EXIT_UNANSWERED_WINDOW_SEC * 1000) + slack,
+            "accepted": isinstance(status, int) and 200 <= status < 300,
+        })
+    for row in target_rows:
+        if row.get("ft_order_id"):
+            continue
+        start = _iso_to_ms(row.get("submitted_at"))
+        if start is None:
+            continue
+        windows.append({
+            "key": ("target", row.get("target_id")),
+            "reason": _tp_label(row, signal_targets), "request_id": None,
+            "start": start - slack,
+            "end": start + (_EXIT_UNANSWERED_WINDOW_SEC * 1000) + slack,
+            "accepted": True,
+        })
+    claimed: set = set()
+    since_ms = _iso_to_ms(ledger_since)
+    orders = [o for o in (trade.get("orders") or [])
+              if isinstance(o, dict)
+              and o.get("ft_order_side") in (exit_side, "stoploss")]
+    orders.sort(key=lambda o: float(o.get("order_timestamp") or 0))
+    out = []
+    for o in orders:
+        oid = str(o.get("order_id") or "")
+        tag = o.get("ft_order_tag")
+        ts = o.get("order_timestamp")
+        reason, source, request_id = None, None, None
+        if oid and oid in req_by_order:
+            req = req_by_order[oid]
+            reason, source, request_id = req["reason"], "receiver_request", req["request_id"]
+        elif oid and oid in tp_by_order:
+            reason, source = _tp_label(tp_by_order[oid], signal_targets), "receiver_tp_ladder"
+        elif o.get("ft_order_side") == "stoploss":
+            reason, source = "stoploss_on_exchange", "freqtrade"
+        elif tag and tag != "force_exit":
+            reason, source = str(tag), "freqtrade"
+        else:
+            candidates = [] if ts is None else [
+                w for w in windows
+                if w["key"] not in claimed and w["start"] <= float(ts) <= w["end"]
+            ]
+            accepted = [w for w in candidates if w["accepted"]]
+            pick = accepted if accepted else candidates
+            if len(pick) == 1:
+                claimed.add(pick[0]["key"])
+                reason, request_id = pick[0]["reason"], pick[0]["request_id"]
+                source = ("receiver_request" if pick[0]["key"][0] == "request"
+                          else "receiver_tp_ladder")
+            elif len(pick) > 1:
+                reason, source = "ambiguous", "receiver"
+            elif since_ms is not None and ts is not None and float(ts) >= since_ms:
+                reason, source = "manual", "outside_receiver"
+            else:
+                reason, source = "unattributed", "before_exit_ledger"
+        out.append({
+            "order_id": o.get("order_id"),
+            "ft_order_side": o.get("ft_order_side"),
+            "order_type": o.get("order_type"),
+            "status": o.get("status"),
+            "filled": o.get("filled"),
+            "price": o.get("safe_price") or o.get("price"),
+            "order_date": o.get("order_date"),
+            "ft_order_tag": tag,
+            "reason": reason,
+            "source": source,
+            "request_id": request_id,
+        })
+    return out
+
+
 def _posted_sl_breached(direction: str, mark: float, sl_abs: float) -> bool:
     """True once mark price has reached/passed the signal's posted SL.
     LONG stops when mark <= SL; SHORT stops when mark >= SL."""
@@ -1817,7 +2105,9 @@ async def _check_posted_sl(cfg: Config, conn: sqlite3.Connection, ft_session=Non
         ).fetchone()
         if not still or still["state"] != "open":
             continue
+        request_id = _record_exit_request(conn, dict(pos), "posted_sl", None, "market")
         resp = await ft_force_exit(cfg, pos["ft_trade_id"], pct=100, session=ft_session)
+        _finish_exit_request(conn, request_id, resp)
         if not (200 <= resp.get("status", 0) < 300):
             logger.error("[POSTED-SL] force_exit FAILED pos_id=%d ft_trade_id=%s status=%s — left open",
                          pos["pos_id"], pos["ft_trade_id"], resp.get("status"))
@@ -2201,6 +2491,56 @@ async def position_by_ft_id(ft_trade_id: int):
     }
 
 
+@app.get("/exits/{ft_trade_id}")
+async def exit_attribution(ft_trade_id: int):
+    """#126: why each exit order on a Freqtrade trade exists.
+
+    Freqtrade records every REST exit as exit_reason=force_exit. This joins
+    its order list with the receiver's ledgers (target_orders, exit_requests)
+    — see attribute_exit_orders for the evidence order. Read-only.
+    """
+    cfg: Config = app.state.cfg
+    conn: sqlite3.Connection = app.state.conn
+    trade = await ft_get_trade(cfg, ft_trade_id,
+                               session=getattr(app.state, "ft_session", None))
+    if trade is None:
+        raise HTTPException(status_code=502, detail="executor trade unavailable")
+    # ft_trade_id alone repeats across Freqtrade DB epochs; the pair does not
+    # for the same id within one receiver DB.
+    pos = conn.execute(
+        "SELECT pos_id FROM positions WHERE ft_trade_id=? AND pair=? "
+        "ORDER BY pos_id DESC LIMIT 1", (ft_trade_id, trade.get("pair")),
+    ).fetchone()
+    pos_id = pos["pos_id"] if pos else None
+    target_rows, requests, signal_targets = [], [], []
+    if pos_id is not None:
+        target_rows = [dict(r) for r in conn.execute(
+            "SELECT * FROM target_orders WHERE pos_id=? ORDER BY target_id", (pos_id,))]
+        requests = [dict(r) for r in conn.execute(
+            "SELECT * FROM exit_requests WHERE pos_id=? ORDER BY request_id", (pos_id,))]
+        opened = conn.execute(
+            "SELECT payload FROM events WHERE pos_id=? AND kind='open' "
+            "ORDER BY event_id LIMIT 1", (pos_id,)).fetchone()
+        try:
+            payload = json.loads(opened["payload"]) if opened else {}
+            signal_targets = (payload or {}).get("signal_targets") or []
+        except (TypeError, ValueError):
+            signal_targets = []
+    since = conn.execute(
+        "SELECT value FROM receiver_meta WHERE key='exit_ledger_since'").fetchone()
+    ledger_since = since["value"] if since else None
+    return {
+        "ft_trade_id": ft_trade_id,
+        "pair": trade.get("pair"),
+        "pos_id": pos_id,
+        "is_open": trade.get("is_open"),
+        "ft_exit_reason": trade.get("exit_reason"),
+        "exit_ledger_since": ledger_since,
+        "exits": attribute_exit_orders(trade, target_rows, requests,
+                                       signal_targets, ledger_since),
+    }
+
+
 @app.get("/target_orders")
 async def list_target_orders(pos_id: Optional[int] = None,
                               state: Optional[str] = None,
@@ -2229,7 +2569,9 @@ async def list_ingress(limit: int = 50, kind: Optional[str] = None,
     decided + the raw classification. Use this when investigating a
     "where did that signal go?" — even crashes leave a row."""
     conn: sqlite3.Connection = app.state.conn
-    sql = "SELECT ingress_id, msg_id, received_at, msg_date, kind, symbol, signal_id, final_action, final_status, completed_at FROM ingress_events WHERE 1=1"
+    sql = ("SELECT ingress_id, msg_id, received_at, msg_date, kind, symbol, signal_id, "
+           "final_action, final_status, completed_at, executor_status, executor_error "
+           "FROM ingress_events WHERE 1=1")
     params: list = []
     if kind is not None:
         sql += " AND kind=?"; params.append(kind)
@@ -2549,6 +2891,12 @@ def _format_event_summary(cfg: Config, payload: EventPayload, result: dict) -> O
     # #64: an edit that changed the kind of a message that already acted is
     # NOT executed — surface it, the operator may need to act by hand.
     if action == "deduped" and result.get("prior_kind"):
+        prior_pos = result.get("prior_pos_id")
+        if prior_pos is not None and prior_pos != result.get("pos_id"):
+            # #96: the message already acted on a DIFFERENT position.
+            return (f"⚠ {head} SECOND ACTION REFUSED · #{sig} {kind} {sym}  · "
+                    f"pos={result.get('pos_id', '?')} untouched · msg already "
+                    f"acted as {result['prior_kind']} on pos={prior_pos}")
         return (f"⚠ {head} EDIT IGNORED · #{sig} {kind} {sym}  · "
                 f"pos={result.get('pos_id', '?')} · msg already acted as "
                 f"{result['prior_kind']}")
@@ -2556,7 +2904,7 @@ def _format_event_summary(cfg: Config, payload: EventPayload, result: dict) -> O
     if action == "deduped":
         return None
 
-    if action == "force_enter":
+    if action in ("force_enter", "entry_rejected"):
         pos = result.get("pos_id", "?")
         ft  = (result.get("ft") or {}).get("status", "?")
         # A non-2xx Freqtrade response means NO position was opened (e.g. the
@@ -2596,6 +2944,13 @@ def _format_event_summary(cfg: Config, payload: EventPayload, result: dict) -> O
         cap = result.get("max_slippage_pct", "?")
         return (f"🚫 {head} SKIPPED · #{sig} {sym} {direc}  · "
                 f"entry bounds missing, slippage cap {cap}% enabled — fail-closed")
+    if action == "exit_rejected":
+        pos = result.get("pos_id", "?")
+        verb = "CLOSE_PARTIAL" if kind == "close_partial" else "CLOSE_FULL"
+        ft_status, ft_error = _executor_outcome(result)
+        tail = f" · {ft_error[:160]}" if ft_error else ""
+        return (f"❌ {head} {verb} REJECTED · #{sig} {sym}  · pos={pos} "
+                f"ft_status={ft_status}{tail} — position unchanged")
     if action == "force_exit":
         pos = result.get("pos_id", "?")
         ft  = (result.get("ft") or {}).get("status", "?")
@@ -2726,6 +3081,37 @@ def _ingress_log_start(conn: sqlite3.Connection,
         return None
 
 
+def _executor_outcome(result) -> tuple[Optional[int], Optional[str]]:
+    """(status, error) of the Freqtrade call a delivery made, if any (#125).
+
+    `final_status` is the HTTP status returned to the observer, which retries
+    on 5xx, so it stays 200 for a handled Freqtrade rejection. The executor's
+    own status and error are recorded beside it instead. When a delivery made
+    several calls, the terminal one counts: the signal_update TP1 fallback's
+    market close (`market_close_ft`) supersedes the failed limit in `ft`.
+    """
+    if not isinstance(result, dict):
+        return None, None
+    ft = result.get("market_close_ft")
+    if not isinstance(ft, dict):
+        ft = result.get("ft")
+    if not isinstance(ft, dict):
+        return None, None
+    status = ft.get("status")
+    if not isinstance(status, int) or isinstance(status, bool):
+        return None, None
+    if 200 <= status < 300:
+        return status, None
+    error = ft.get("body") or ft.get("error") or ""
+    try:
+        parsed = json.loads(error)
+        if isinstance(parsed, dict):
+            error = parsed.get("error") or parsed.get("detail") or error
+    except (TypeError, ValueError):
+        pass
+    return status, str(error)[:500] or None
+
+
 def _ingress_log_finish(conn: sqlite3.Connection, ingress_id: Optional[int],
                         result: dict, status: int) -> None:
     """Stamp the handler outcome onto the ingress row. The LATEST delivery's
@@ -2735,10 +3121,12 @@ def _ingress_log_finish(conn: sqlite3.Connection, ingress_id: Optional[int],
         return
     try:
         action = result.get("action") if isinstance(result, dict) else None
+        executor_status, executor_error = _executor_outcome(result)
         conn.execute(
-            "UPDATE ingress_events SET final_action=?, final_status=?, completed_at=? "
-            "WHERE ingress_id=?",
-            (action, status, datetime.now(timezone.utc).isoformat(), ingress_id),
+            "UPDATE ingress_events SET final_action=?, final_status=?, completed_at=?, "
+            "executor_status=?, executor_error=? WHERE ingress_id=?",
+            (action, status, datetime.now(timezone.utc).isoformat(),
+             executor_status, executor_error, ingress_id),
         )
     except Exception as e:
         logger.warning("ingress_log_finish failed: %s", e)
@@ -2781,10 +3169,12 @@ def _ingress_revision_finish(conn: sqlite3.Connection, revision_id: Optional[int
         return
     try:
         action = result.get("action") if isinstance(result, dict) else None
+        executor_status, executor_error = _executor_outcome(result)
         conn.execute(
-            "UPDATE ingress_revisions SET final_action=?, final_status=?, completed_at=? "
-            "WHERE rev_id=?",
-            (action, status, datetime.now(timezone.utc).isoformat(), revision_id),
+            "UPDATE ingress_revisions SET final_action=?, final_status=?, completed_at=?, "
+            "executor_status=?, executor_error=? WHERE rev_id=?",
+            (action, status, datetime.now(timezone.utc).isoformat(),
+             executor_status, executor_error, revision_id),
         )
     except Exception as e:
         logger.warning("ingress_revision_finish failed: %s", e)
@@ -3201,7 +3591,8 @@ async def _process_event_inner(payload: EventPayload, phase2_locked=False):
             pos_id, signal_id, symbol, direction.upper(), pair, stake, leverage,
             entry_desc, remaining_targets, len(placed_tps), resp["status"], ft_trade_id,
         )
-        return {"action": "force_enter", "pos_id": pos_id, "ft": resp,
+        return {"action": "force_enter" if new_state == "open" else "entry_rejected",
+                "pos_id": pos_id, "ft": resp,
                 "ordertype": entry_ordertype,
                 "limit_price": entry_limit_price,
                 "entry_tag": entry_tag,
@@ -3258,9 +3649,9 @@ async def _process_event_inner(payload: EventPayload, phase2_locked=False):
             "pending": True,
         })
         # #64: no await between this check and the claim below.
-        prior_kind = _prior_action_kind_for_msg(conn, pos, msg_id, kind)
-        if prior_kind is not None:
-            return _kind_change_deduped(pos, msg_id, kind, prior_kind)
+        refused = _refuse_if_msg_already_acted(conn, pos, msg_id, kind)
+        if refused is not None:
+            return refused
         claim = conn.execute(
             "INSERT OR IGNORE INTO events "
             "(pos_id, msg_id, event_at, kind, payload, response) "
@@ -3396,10 +3787,15 @@ async def _process_event_inner(payload: EventPayload, phase2_locked=False):
                     kind.upper(), msg_id, pos["pos_id"], phase2_rows,
                 )
 
+        request_id = _record_exit_request(
+            conn, pos,
+            "channel_close" if kind == "close_full" else "channel_partial_close",
+            msg_id, "market")
         resp = await ft_force_exit(
             cfg, pos["ft_trade_id"], pct=close_pct_of_remaining,
             session=getattr(app.state, "ft_session", None),
         )
+        _finish_exit_request(conn, request_id, resp)
         # Patch the claim row with the real FT response.
         conn.execute(
             "UPDATE events SET response = ? "
@@ -3462,10 +3858,12 @@ async def _process_event_inner(payload: EventPayload, phase2_locked=False):
                 close_pct_of_remaining, pct_remaining_before,
                 new_pct_open, new_state,
             )
-        return {"action": "force_exit",
+        # #125: a refused exit is not an exit. Freqtrade's status and error
+        # are stamped onto the ingress row by handle_event.
+        return {"action": "force_exit" if ft_ok else "exit_rejected",
                 "pos_id": pos["pos_id"],
                 "ft": resp,
-                "pct_closed_of_original": close_pp_of_original,
+                "pct_closed_of_original": close_pp_of_original if ft_ok else 0.0,
                 "pct_open_after": new_pct_open,
                 "kind": kind}
 
@@ -3512,9 +3910,9 @@ async def _process_event_inner(payload: EventPayload, phase2_locked=False):
             "pending": True,
         })
         # #64: no await between this check and the claim below.
-        prior_kind = _prior_action_kind_for_msg(conn, pos, msg_id, kind)
-        if prior_kind is not None:
-            return _kind_change_deduped(pos, msg_id, kind, prior_kind)
+        refused = _refuse_if_msg_already_acted(conn, pos, msg_id, kind)
+        if refused is not None:
+            return refused
         claim = conn.execute(
             "INSERT OR IGNORE INTO events "
             "(pos_id, msg_id, event_at, kind, payload, response) "
@@ -3535,8 +3933,11 @@ async def _process_event_inner(payload: EventPayload, phase2_locked=False):
             """Full market close + local bookkeeping (close_reason=
             signal_update_close). Mirrors the close_full path: mark position
             closed and cancel any resting ladder rows."""
+            request_id = _record_exit_request(conn, pos, "signal_update_close",
+                                              msg_id, "market")
             resp = await ft_force_exit(cfg, pos["ft_trade_id"], pct=None,
                                        session=ft_session)
+            _finish_exit_request(conn, request_id, resp)
             conn.execute(
                 "UPDATE events SET response = ? "
                 "WHERE pos_id = ? AND msg_id = ? AND kind = ?",
@@ -3724,16 +4125,23 @@ async def _process_event_inner(payload: EventPayload, phase2_locked=False):
             #    raised network/timeout error into a status-0 dict so an
             #    exception can never bypass the retry/market-close fallback and
             #    leave the event 'pending' after the cancel already fired.
+            tp1_requests: list[Optional[int]] = []
+
             async def _post_tp1_limit() -> dict:
+                request_id = _record_exit_request(conn, pos, "signal_update_tp1",
+                                                  msg_id, "limit")
+                tp1_requests.append(request_id)
                 try:
-                    return await ft_force_exit_limit(
+                    resp = await ft_force_exit_limit(
                         cfg, pos["ft_trade_id"], amount=remaining_amount,
                         price=tp1, session=ft_session)
                 except Exception as e:  # noqa: BLE001 — must not escape post-cancel
                     logger.error(
                         "[SIGNAL_UPDATE close_at_target_1] pos_id=%d %s "
                         "limit post raised %r", pos["pos_id"], symbol, e)
-                    return {"status": 0, "body": f"exception: {e!r}"}
+                    resp = {"status": 0, "body": f"exception: {e!r}"}
+                _finish_exit_request(conn, request_id, resp)
+                return resp
 
             resp = await _post_tp1_limit()
             ok = 200 <= resp["status"] < 300
@@ -3768,6 +4176,9 @@ async def _process_event_inner(payload: EventPayload, phase2_locked=False):
                                                   or remaining_amount)
                         except (TypeError, ValueError):
                             actual_amount = remaining_amount
+                if new_order_id and tp1_requests:
+                    _finish_exit_request(conn, tp1_requests[-1], None,
+                                         ft_order_id=new_order_id)
                 next_idx = (conn.execute(
                     "SELECT COALESCE(MAX(idx), -1) + 1 FROM target_orders "
                     "WHERE pos_id=?", (pos["pos_id"],)).fetchone()[0])
@@ -3835,6 +4246,9 @@ async def _process_event_inner(payload: EventPayload, phase2_locked=False):
              pos["pos_id"], msg_id, kind))
         return {"action": final_status,
                 "pos_id": pos["pos_id"], "ft": resp,
+                # #125: when both limit posts failed, the market close is
+                # the call that decided the position's fate.
+                "market_close_ft": mkt_resp,
                 "instruction": instruction, "kind": kind,
                 "tp1": tp1, "mark": mark, "path": "limit_at_tp1",
                 "ft_order_id": new_order_id}
@@ -3885,10 +4299,37 @@ async def _process_event_inner(payload: EventPayload, phase2_locked=False):
             if loosens:
                 return {"action": "skipped", "reason": "move_sl_would_loosen"}
 
-        conn.execute(
-            "UPDATE positions SET sl_abs=?, last_event_at=? WHERE pos_id=?",
-            (new_sl, datetime.now(timezone.utc).isoformat(), pos["pos_id"]),
-        )
+        # #96: a moved stop is this message's one action. It changes sl_abs,
+        # which the posted-SL check and Freqtrade's custom_stoploss act on,
+        # so it is recorded and gated like a close. No await from here on.
+        refused = _refuse_if_msg_already_acted(conn, pos, msg_id, kind)
+        if refused is not None:
+            return refused
+        now_iso = datetime.now(timezone.utc).isoformat()
+        conn.execute("BEGIN")
+        try:
+            claim = conn.execute(
+                "INSERT OR IGNORE INTO events "
+                "(pos_id, msg_id, event_at, kind, payload, response) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (pos["pos_id"], msg_id, now_iso, kind,
+                 json.dumps({"ft_trade_id": pos["ft_trade_id"],
+                             "old_sl": old_sl, "new_sl": new_sl, "mark": mark}),
+                 json.dumps({"status": "applied"})),
+            )
+            if claim.rowcount == 0:
+                conn.execute("ROLLBACK")
+                logger.info("[MOVE SL DUPE] msg_id=%d pos_id=%d — already applied",
+                            msg_id, pos["pos_id"])
+                return {"action": "deduped", "pos_id": pos["pos_id"], "kind": kind}
+            conn.execute(
+                "UPDATE positions SET sl_abs=?, last_event_at=? WHERE pos_id=?",
+                (new_sl, now_iso, pos["pos_id"]),
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
         logger.info(
             "[MOVE SL] pos_id=%d %s %s old=%s new=%s",
             pos["pos_id"], symbol, direction.upper(), old_sl, new_sl,

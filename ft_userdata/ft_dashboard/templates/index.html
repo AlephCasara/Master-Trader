@@ -5,16 +5,31 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>master-trader</title>
 <meta name="description" content="Live trading fleet · operational + pre-flight dashboard">
-<meta name="theme-color" content="#fafaf7">
+<meta name="theme-color">
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%230891b2'/><path d='M8 22 L13 14 L17 18 L24 8' stroke='%23ffffff' stroke-width='2.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
-<link rel="stylesheet" href="/static/styles.css?v=25">
+<link rel="stylesheet" href="/static/styles.css?v=26">
 <script defer
         src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.3/dist/cdn.min.js"
         integrity="sha384-iZD2X8o1Zdq0HR5H/7oa8W30WS4No+zWCKUPD7fHRay9I1Gf+C4F8sVmw7zec1wW"
         crossorigin="anonymous"></script>
 
-<link rel="stylesheet" href="/static/workspace.css?v=44">
-<script defer src="/static/price-chart.js?v=44"></script>
+<link rel="stylesheet" href="/static/workspace.css?v=48">
+<script data-theme-init>
+(() => {
+  const root = document.documentElement, key = 'master-trader-theme', media = matchMedia('(prefers-color-scheme: dark)');
+  const preference = () => { try { const value = localStorage.getItem(key); return value === 'light' || value === 'dark' ? value : 'system'; } catch { return 'system'; } };
+  const apply = () => {
+    const chosen = preference(), theme = chosen === 'system' ? (media.matches ? 'dark' : 'light') : chosen, previous = root.dataset.theme;
+    root.dataset.theme = theme;
+    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', getComputedStyle(root).getPropertyValue('--bg-0').trim());
+    if (previous && previous !== theme) document.dispatchEvent(new CustomEvent('themechange', { detail: { theme } }));
+  };
+  window.masterTheme = { preference, set(value) { try { localStorage.setItem(key, value); } catch {} apply(); } };
+  media.addEventListener('change', apply);
+  apply();
+})();
+</script>
+<script defer src="/static/price-chart.js?v=45"></script>
 </head>
 <body x-data="dash()" x-init="boot()" @keydown.escape.window="expandedTrade=null; $nextTick(() => _scheduleChartResize())">
 
@@ -50,6 +65,11 @@
       <span>brasília · br</span>
       <span>refresh <span x-text="pollInterval">30</span>s</span>
     </div>
+    <button type="button" class="theme-toggle" @click="cycleTheme()" :aria-label="`Theme: ${themePreference}. Switch theme`" :title="`Theme: ${themePreference}`">
+      <svg x-show="themePreference === 'light'" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="3" fill="currentColor"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3 3l1.4 1.4M11.6 11.6L13 13M3 13l1.4-1.4M11.6 4.4L13 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+      <svg x-show="themePreference === 'dark'" viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 9.6A5.5 5.5 0 0 1 6.4 2.5a5.5 5.5 0 1 0 7.1 7.1z" fill="currentColor"/></svg>
+      <svg x-show="themePreference === 'system'" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 2a6 6 0 0 1 0 12z" fill="currentColor"/></svg>
+    </button>
     <button class="icon-btn" @click="refresh()">↻ refresh</button>
   </header>
 
@@ -352,14 +372,15 @@
           <table class="ledger">
             <thead>
               <tr>
-                <th>closed</th><th>pair</th><th class="right">entry</th><th class="right">exit</th>
+                <th>closed</th><th>strategy</th><th>pair</th><th class="right">entry</th><th class="right">exit</th>
                 <th class="right">p&l %</th><th class="right">p&l $</th><th>reason</th>
               </tr>
             </thead>
             <tbody>
-              <template x-for="t in recentLiveTrades" :key="t.close_timestamp + t.pair">
+              <template x-for="t in recentLiveTrades" :key="t._bot + ':' + t.close_timestamp + ':' + t.pair">
                 <tr>
-                  <td x-text="fmtDate(t.close_date)"></td>
+                  <td style="white-space:nowrap" x-text="fmtDate(t.close_date)"></td>
+                  <td style="white-space:nowrap" x-text="t._botLabel"></td>
                   <td class="label" x-text="t.pair"></td>
                   <td class="right" x-text="fmtRate(t.open_rate)"></td>
                   <td class="right" x-text="fmtRate(t.close_rate)"></td>
@@ -424,7 +445,7 @@
       <section class="card col-6"><div class="card-head"><div><h2 class="card-title">By market</h2><p class="card-sub">Largest contributions by absolute impact</p></div></div><div class="chart comparison" id="chart-portfolio-pair"></div></section>
     </div>
     <section class="card"><div class="card-head"><div><h2 class="card-title">Recent closes</h2><p class="card-sub">Last 30 closed trades across live strategies</p></div></div>
-      <div class="portfolio-ledger-wrap"><table class="ledger" x-show="recentLiveTrades.length" x-cloak><thead><tr><th>Closed</th><th>Strategy</th><th>Market</th><th class="right">Return</th><th class="right">P&amp;L</th><th>Exit</th></tr></thead><tbody><template x-for="trade in recentLiveTrades" :key="trade._bot+':'+trade.close_timestamp+':'+trade.pair"><tr><td x-text="fmtDate(trade.close_date)"></td><td x-text="trade._botLabel"></td><td x-text="trade.pair"></td><td class="right" :class="trade.profit_pct>=0?'pos':'neg'" x-text="fmtPctSigned(trade.profit_pct)"></td><td class="right" :class="trade.profit_abs>=0?'pos':'neg'" x-text="fmtUsdSigned(trade.profit_abs)"></td><td><span class="reason-pill" x-text="trade.exit_reason"></span></td></tr></template></tbody></table><div class="empty" x-show="!recentLiveTrades.length">No closed trades in the current live history.</div></div>
+      <div class="portfolio-ledger-wrap"><table class="ledger" x-show="recentLiveTrades.length" x-cloak><thead><tr><th>Closed</th><th>Strategy</th><th>Market</th><th class="right">Return</th><th class="right">P&amp;L</th><th>Exit</th></tr></thead><tbody><template x-for="trade in recentLiveTrades" :key="trade._bot+':'+trade.close_timestamp+':'+trade.pair"><tr><td x-text="fmtDate(trade.close_date)"></td><td style="white-space:nowrap" x-text="trade._botLabel"></td><td x-text="trade.pair"></td><td class="right" :class="trade.profit_pct>=0?'pos':'neg'" x-text="fmtPctSigned(trade.profit_pct)"></td><td class="right" :class="trade.profit_abs>=0?'pos':'neg'" x-text="fmtUsdSigned(trade.profit_abs)"></td><td><span class="reason-pill" x-text="trade.exit_reason"></span></td></tr></template></tbody></table><div class="empty" x-show="!recentLiveTrades.length">No closed trades in the current live history.</div></div>
     </section>
   </main>
 
@@ -561,7 +582,7 @@
             </div>
             <div class="verdict" :class="readyVerdict(bot).cls" x-text="readyVerdict(bot).text"
                  x-show="bot.baseline_comparable"></div>
-            <div class="verdict" style="background:var(--info-soft);color:var(--info);border-color:rgba(37,99,235,0.3);"
+            <div class="verdict" style="background:var(--info-soft);color:var(--info);border-color:rgb(var(--info-rgb) / .3);"
                  x-show="!bot.baseline_comparable"
                  x-text="bot.baseline_status === 'stale-pre-v2' ? 'fresh epoch · baseline stale' : 'observational'">observational</div>
           </div>
@@ -827,7 +848,7 @@
                     x-text="trade.is_open ? 'OPEN' : (trade.exit_reason || '—')">—</span>
             </div>
           </div>
-          <div class="position-context"><span x-text="trade.bot_name"></span><span x-show="trade.dry_run">Paper trading</span><span x-text="trade.is_short?'Short':'Long'"></span><span x-show="trade.tps_total" x-text="trade.tps_hit+' / '+trade.tps_total+' targets filled'"></span><span x-show="trade.booked_pct>0" x-text="Math.round(trade.booked_pct)+'% realized'"></span></div>
+          <div class="position-context"><span x-text="trade.bot_name"></span><span x-show="trade.dry_run">Paper trading</span><span x-text="trade.is_short?'Short':'Long'"></span><span x-show="trade.leverage>1" x-text="fmtLeverage(trade.leverage)+' leverage · P&amp;L % is on margin'"></span><span x-show="priceMovePct(trade)!=null" title="Price change from entry, before leverage and fees" x-text="'Price '+fmtPctSigned(priceMovePct(trade))+' from entry'"></span><span x-show="trade.tps_total" x-text="trade.tps_hit+' / '+trade.tps_total+' targets filled'"></span><span x-show="trade.booked_pct>0" x-text="Math.round(trade.booked_pct)+'% realized'"></span></div>
           <div class="trade-card-detail">
             <span class="trade-entry-price" title="Average filled entry price · solid blue line on chart">Entry price <strong x-text="(trade.open_rate||0).toPrecision(5)">—</strong></span>
             <span class="sep">→</span>
@@ -855,7 +876,14 @@
           <div class="exit-levels" x-show="trade.is_open">
             <span x-show="trade.stop_rate" class="exit-stop" x-text="'Bot stop '+fmtRate(trade.stop_rate)"></span>
             <template x-for="(level,i) in (trade.exit_levels||[])" :key="i"><span :class="'exit-'+level.state" x-text="level.label+' '+fmtRate(level.price)+' · '+level.state"></span></template>
-            <span x-show="!(trade.exit_levels||[]).length">No TP order reported · strategy may exit dynamically</span>
+            <span x-show="!(trade.exit_levels||[]).length" x-text="exitPolicyRows(trade).length?'No TP order reported':'No TP order reported · strategy may exit dynamically'"></span>
+          </div>
+          <div class="exit-policy" x-show="exitPolicyRows(trade).length" x-cloak>
+            <p class="exit-policy-head">Strategy exits · the bot checks these against price; they are not resting exchange orders</p>
+            <dl>
+              <template x-for="(row,i) in exitPolicyRows(trade)" :key="i"><div :title="row.reason?'Exit reason: '+row.reason:null"><dt x-text="row.label"></dt><dd x-text="row.text"></dd></div></template>
+            </dl>
+            <p class="exit-policy-note" x-show="(trade.exit_levels||[]).length">TP numbers are the source signal's own target numbers. The receiver may place only some targets, merging or skipping those it cannot place separately, so numbers can skip.</p>
           </div>
           <div class="trade-chart-source">
             <span x-text="venueLabel(raw.bots[trade.bot_key])"></span>
@@ -1140,7 +1168,7 @@
   // expose toMs so Alpine inline expressions can use it
   function toMs(ts) { return !ts ? 0 : ts > 1e12 ? ts : ts * 1000; }
 </script>
-<script src="/static/dashboard.js?v=44"></script>
+<script src="/static/dashboard.js?v=47"></script>
 <div class="chart-attribution"><a href="https://www.tradingview.com/" target="_blank" rel="noopener">Charts by TradingView</a> · <a href="/static/CHART-NOTICE.txt">Notice</a> · <a href="/static/CHART-LICENSE.txt">License</a></div>
 </body>
 </html>

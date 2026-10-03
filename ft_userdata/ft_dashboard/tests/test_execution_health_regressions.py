@@ -145,3 +145,15 @@ def test_request_degradation_changes_green_fleet_to_yellow(monkeypatch, tmp_path
     assert '3 failures' in app._fleet_status()['summary']
     path.unlink()
     assert app._fleet_status()['level'] == 'yellow'
+
+
+def test_fully_observed_fleet_with_no_live_accounts_stays_green(monkeypatch, tmp_path):
+    import json
+    path = tmp_path / 'health.json'
+    path.write_text(json.dumps({'observed_at': time.time(), 'complete': True,
+       'accounts': {}, 'equity': None, 'errors': [],
+       'gateway': {'observed_at': time.time(), 'status': 'ok', 'faults': 0}}))
+    monkeypatch.setenv('ACCOUNT_HEALTH_FILE', str(path))
+    monkeypatch.setattr(app, 'BOTS', [])
+    assert app._account_health()['warnings'] == []
+    assert app._fleet_status()['level'] == 'green'

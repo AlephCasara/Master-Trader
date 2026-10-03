@@ -51,7 +51,8 @@ class GateConfig:
     mode: str
     thresholds: dict = field(default_factory=dict)
     label_order: tuple = ()
-    enabled: bool = True           # False = arquivo ausente, sem limiares
+    enabled: bool = True           # False = arquivo ausente ou invalido, sem limiares
+    disabled_reason: str = ""      # gravado em cada veredito quando enabled=False
 
 
 @dataclass(frozen=True)
@@ -63,8 +64,15 @@ class Verdict:
     reason: str
 
 
-def disabled_config() -> GateConfig:
-    return GateConfig(schema_version=0, mode="shadow", enabled=False)
+MISSING_CONFIG = "config ausente"
+INVALID_CONFIG = "config invalida"
+
+
+def disabled_config(reason: str = MISSING_CONFIG) -> GateConfig:
+    """Gate desligado. `reason` distingue, na tabela, um periodo com arquivo
+    ausente de um com arquivo rejeitado (#65)."""
+    return GateConfig(schema_version=0, mode="shadow", enabled=False,
+                      disabled_reason=reason)
 
 
 def _is_number(v) -> bool:
@@ -131,7 +139,8 @@ def evaluate(cfg: GateConfig, classification: dict) -> Verdict:
     kind_s = kind if isinstance(kind, str) else None
 
     if not cfg.enabled:
-        return Verdict(kind_s, conf, None, DISABLED, "config ausente")
+        return Verdict(kind_s, conf, None, DISABLED,
+                       cfg.disabled_reason or MISSING_CONFIG)
     if kind_s is None or kind_s not in cfg.thresholds:
         return Verdict(kind_s, conf, None, WOULD_BLOCK, f"kind desconhecido: {kind!r}")
     threshold = cfg.thresholds[kind_s]

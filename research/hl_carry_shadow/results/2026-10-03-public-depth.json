@@ -1,0 +1,651 @@
+{
+  "sampled_from": [
+    1790986223.8016698,
+    1790989536.667365
+  ],
+  "notionals": [
+    1000.0,
+    3000.0
+  ],
+  "coins": {
+    "ASTER": {
+      "samples": 12,
+      "hl_spread_bps": {
+        "median": 0.7614119373787072,
+        "max": 2.90510676267413,
+        "n_unfillable": 0
+      },
+      "bn_spread_bps": {
+        "median": 1.3837000734453724,
+        "max": 1.3849456408834429,
+        "n_unfillable": 0
+      },
+      "hl_ask_l1_usd": {
+        "median": 400.29547,
+        "max": 3444.4985599999995,
+        "n_unfillable": 0
+      },
+      "bn_ask_l1_usd": {
+        "median": 875.8176705000001,
+        "max": 3001.91525,
+        "n_unfillable": 0
+      },
+      "bn_bid_l1_usd": {
+        "median": 1209.279705,
+        "max": 6716.53496,
+        "n_unfillable": 0
+      },
+      "hl_buy_1000_beyond_touch_bps": {
+        "median": 0.08293278423742023,
+        "max": 1.8252223588659824,
+        "n_unfillable": 0
+      },
+      "bn_buy_1000_beyond_touch_bps": {
+        "median": 0.17172366716729057,
+        "max": 2.130883392345681,
+        "n_unfillable": 0
+      },
+      "bn_sell_1000_beyond_touch_bps": {
+        "median": 0.0,
+        "max": 2.110807991006701,
+        "n_unfillable": 0
+      },
+      "hl_buy_3000_beyond_touch_bps": {
+        "median": 0.11995387290338824,
+        "max": 1.9901177580773979,
+        "n_unfillable": 0
+      },
+      "bn_buy_3000_beyond_touch_bps": {
+        "median": 1.5172872636355843,
+        "max": 2.712844978219306,
+        "n_unfillable": 0
+      },
+      "bn_sell_3000_beyond_touch_bps": {
+        "median": 1.1607596761384156,
+        "max": 4.005410404123423,
+        "n_unfillable": 0
+      }
+    },
+    "EIGEN": {
+      "samples": 12,
+      "hl_spread_bps": {
+        "median": 4.037956793862982,
+        "max": 12.172854534389225,
+        "n_unfillable": 0
+      },
+      "bn_spread_bps": {
+        "median": 4.048584489062144,
+        "max": 8.07428340734783,
+        "n_unfillable": 0
+      },
+      "hl_ask_l1_usd": {
+        "median": 882.089504,
+        "max": 2857.49653,
+        "n_unfillable": 0
+      },
+      "bn_ask_l1_usd": {
+        "median": 195.15466800000002,
+        "max": 1322.1344219999999,
+        "n_unfillable": 0
+      },
+      "bn_bid_l1_usd": {
+        "median": 545.673468,
+        "max": 2750.7666719999997,
+        "n_unfillable": 0
+      },
+      "hl_buy_1000_beyond_touch_bps": {
+        "median": 0.4761811448870669,
+        "max": 2.296741098119243,
+        "n_unfillable": 0
+      },
+      "bn_buy_1000_beyond_touch_bps": {
+        "median": 3.6498040434275567,
+        "max": 6.902799383667449,
+        "n_unfillable": 0
+      },
+      "bn_sell_1000_beyond_touch_bps": {
+        "median": 1.8267760486159457,
+        "max": 7.954786736936336,
+        "n_unfillable": 0
+      },
+      "hl_buy_3000_beyond_touch_bps": {
+        "median": 3.581419283869547,
+        "max": 5.074131098976895,
+        "n_unfillable": 0
+      },
+      "bn_buy_3000_beyond_touch_bps": {
+        "median": 5.624793516399091,
+        "max": 9.912082089160558,
+        "n_unfillable": 0
+      },
+      "bn_sell_3000_beyond_touch_bps": {
+        "median": 3.2978467145470827,
+        "max": 8.012807381261196,
+        "n_unfillable": 0
+      }
+    },
+    "ENA": {
+      "samples": 12,
+      "hl_spread_bps": {
+        "median": 1.9222100180731787,
+        "max": 3.8316623028293306,
+        "n_unfillable": 0
+      },
+      "bn_spread_bps": {
+        "median": 4.26440182376326,
+        "max": 4.3020004302007635,
+        "n_unfillable": 0
+      },
+      "hl_ask_l1_usd": {
+        "median": 399.93231,
+        "max": 2998.62048,
+        "n_unfillable": 0
+      },
+      "bn_ask_l1_usd": {
+        "median": 2827.1528770000004,
+        "max": 6372.53025,
+        "n_unfillable": 0
+      },
+      "bn_bid_l1_usd": {
+        "median": 6728.8625329999995,
+        "max": 17992.0594,
+        "n_unfillable": 0
+      },
+      "hl_buy_1000_beyond_touch_bps": {
+        "median": 0.3243720343478771,
+        "max": 1.8702742426362522,
+        "n_unfillable": 0
+      },
+      "bn_buy_1000_beyond_touch_bps": {
+        "median": 0.0,
+        "max": 0.0,
+        "n_unfillable": 0
+      },
+      "bn_sell_1000_beyond_touch_bps": {
+        "median": 0.0,
+        "max": 2.4599842991648906,
+        "n_unfillable": 0
+      },
+      "hl_buy_3000_beyond_touch_bps": {
+        "median": 0.8497908023990906,
+        "max": 3.265778805112454,
+        "n_unfillable": 0
+      },
+      "bn_buy_3000_beyond_touch_bps": {
+        "median": 0.24714930853403377,
+        "max": 2.8224325409611413,
+        "n_unfillable": 0
+      },
+      "bn_sell_3000_beyond_touch_bps": {
+        "median": 0.0,
+        "max": 3.683758092044829,
+        "n_unfillable": 0
+      }
+    },
+    "GRAM": {
+      "samples": 12,
+      "hl_spread_bps": {
+        "median": 0.6676458813688526,
+        "max": 1.3341338136213592,
+        "n_unfillable": 0
+      },
+      "bn_spread_bps": {
+        "median": 6.668889629875891,
+        "max": 6.677796327211284,
+        "n_unfillable": 0
+      },
+      "hl_ask_l1_usd": {
+        "median": 1499.9159,
+        "max": 12122.0187,
+        "n_unfillable": 0
+      },
+      "bn_ask_l1_usd": {
+        "median": 1221.341725,
+        "max": 7672.436549999999,
+        "n_unfillable": 0
+      },
+      "bn_bid_l1_usd": {
+        "median": 2133.2775,
+        "max": 16315.730590000001,
+        "n_unfillable": 0
+      },
+      "hl_buy_1000_beyond_touch_bps": {
+        "median": 0.0,
+        "max": 0.43527937169072334,
+        "n_unfillable": 0
+      },
+      "bn_buy_1000_beyond_touch_bps": {
+        "median": 0.0,
+        "max": 6.57090378311557,
+        "n_unfillable": 0
+      },
+      "bn_sell_1000_beyond_touch_bps": {
+        "median": 0.0,
+        "max": 0.06485692248028523,
+        "n_unfillable": 0
+      },
+      "hl_buy_3000_beyond_touch_bps": {
+        "median": 0.5256149864574999,
+        "max": 1.8632505593833317,
+        "n_unfillable": 0
+      },
+      "bn_buy_3000_beyond_touch_bps": {
+        "median": 3.952789877268909,
+        "max": 6.634745501827114,
+        "n_unfillable": 0
+      },
+      "bn_sell_3000_beyond_touch_bps": {
+        "median": 1.926944810048218,
+        "max": 4.469998414402313,
+        "n_unfillable": 0
+      }
+    },
+    "KAITO": {
+      "samples": 12,
+      "hl_spread_bps": {
+        "median": 1.9523490545359237,
+        "max": 4.8226180787893265,
+        "n_unfillable": 0
+      },
+      "bn_spread_bps": {
+        "median": 6.031363636570498,
+        "max": 9.048408988086939,
+        "n_unfillable": 0
+      },
+      "hl_ask_l1_usd": {
+        "median": 399.90937499999995,
+        "max": 441.5733,
+        "n_unfillable": 0
+      },
+      "bn_ask_l1_usd": {
+        "median": 626.643295,
+        "max": 1763.2123800000002,
+        "n_unfillable": 0
+      },
+      "bn_bid_l1_usd": {
+        "median": 238.399415,
+        "max": 843.92088,
+        "n_unfillable": 0
+      },
+      "hl_buy_1000_beyond_touch_bps": {
+        "median": 1.0794635411859705,
+        "max": 3.20513630805771,
+        "n_unfillable": 0
+      },
+      "bn_buy_1000_beyond_touch_bps": {
+        "median": 1.122934381181782,
+        "max": 4.509484919916434,
+        "n_unfillable": 0
+      },
+      "bn_sell_1000_beyond_touch_bps": {
+        "median": 2.4813598590041366,
+        "max": 6.1429003786468686,
+        "n_unfillable": 0
+      },
+      "hl_buy_3000_beyond_touch_bps": {
+        "median": 2.884023071472969,
+        "max": 4.568779346585166,
+        "n_unfillable": 0
+      },
+      "bn_buy_3000_beyond_touch_bps": {
+        "median": 2.4016694072333706,
+        "max": 8.529291436060396,
+        "n_unfillable": 0
+      },
+      "bn_sell_3000_beyond_touch_bps": {
+        "median": 4.7758368440832175,
+        "max": 8.070101706076786,
+        "n_unfillable": 0
+      }
+    },
+    "ONDO": {
+      "samples": 12,
+      "hl_spread_bps": {
+        "median": 1.215425376082723,
+        "max": 2.4254674077818894,
+        "n_unfillable": 0
+      },
+      "bn_spread_bps": {
+        "median": 2.0228586298738636,
+        "max": 4.042037186742794,
+        "n_unfillable": 0
+      },
+      "hl_ask_l1_usd": {
+        "median": 400.19028000000003,
+        "max": 2665.52115,
+        "n_unfillable": 0
+      },
+      "bn_ask_l1_usd": {
+        "median": 2098.387085,
+        "max": 5925.3528,
+        "n_unfillable": 0
+      },
+      "bn_bid_l1_usd": {
+        "median": 917.3011300000001,
+        "max": 5539.74954,
+        "n_unfillable": 0
+      },
+      "hl_buy_1000_beyond_touch_bps": {
+        "median": 0.28609996829971696,
+        "max": 0.6290758623100843,
+        "n_unfillable": 0
+      },
+      "bn_buy_1000_beyond_touch_bps": {
+        "median": 0.0,
+        "max": 1.8961119928015355,
+        "n_unfillable": 0
+      },
+      "bn_sell_1000_beyond_touch_bps": {
+        "median": 0.5046901570309259,
+        "max": 2.0126840595089277,
+        "n_unfillable": 0
+      },
+      "hl_buy_3000_beyond_touch_bps": {
+        "median": 1.0777636791533802,
+        "max": 1.8998073119767684,
+        "n_unfillable": 0
+      },
+      "bn_buy_3000_beyond_touch_bps": {
+        "median": 0.6065474949028282,
+        "max": 2.965251970046826,
+        "n_unfillable": 0
+      },
+      "bn_sell_3000_beyond_touch_bps": {
+        "median": 1.4023435756644724,
+        "max": 3.0156318490949428,
+        "n_unfillable": 0
+      }
+    },
+    "PUMP": {
+      "samples": 12,
+      "hl_spread_bps": {
+        "median": 1.8421008588556367,
+        "max": 3.7223152801047186,
+        "n_unfillable": 0
+      },
+      "bn_spread_bps": {
+        "median": 1.8086561074224403,
+        "max": 1.8623707980261346,
+        "n_unfillable": 0
+      },
+      "hl_ask_l1_usd": {
+        "median": 1203.904897,
+        "max": 20559.447654000003,
+        "n_unfillable": 0
+      },
+      "bn_ask_l1_usd": {
+        "median": 654.04838,
+        "max": 1201.462024,
+        "n_unfillable": 0
+      },
+      "bn_bid_l1_usd": {
+        "median": 650.4545370000001,
+        "max": 4015.808211,
+        "n_unfillable": 0
+      },
+      "hl_buy_1000_beyond_touch_bps": {
+        "median": 0.0,
+        "max": 4.022048718159713,
+        "n_unfillable": 0
+      },
+      "bn_buy_1000_beyond_touch_bps": {
+        "median": 0.6413049590963982,
+        "max": 3.438427348786827,
+        "n_unfillable": 0
+      },
+      "bn_sell_1000_beyond_touch_bps": {
+        "median": 0.6420971177181514,
+        "max": 2.7888087612363366,
+        "n_unfillable": 0
+      },
+      "hl_buy_3000_beyond_touch_bps": {
+        "median": 1.1747031719624295,
+        "max": 4.840824407227221,
+        "n_unfillable": 0
+      },
+      "bn_buy_3000_beyond_touch_bps": {
+        "median": 2.768500091691786,
+        "max": 6.034814381038919,
+        "n_unfillable": 0
+      },
+      "bn_sell_3000_beyond_touch_bps": {
+        "median": 2.24213246103853,
+        "max": 4.678084216321208,
+        "n_unfillable": 0
+      }
+    },
+    "TAO": {
+      "samples": 12,
+      "hl_spread_bps": {
+        "median": 1.1883138197296357,
+        "max": 4.759476457591134,
+        "n_unfillable": 0
+      },
+      "bn_spread_bps": {
+        "median": 3.4042553191497107,
+        "max": 3.4299434059345817,
+        "n_unfillable": 0
+      },
+      "hl_ask_l1_usd": {
+        "median": 400.0640000000001,
+        "max": 10079.388760000002,
+        "n_unfillable": 0
+      },
+      "bn_ask_l1_usd": {
+        "median": 7272.33078,
+        "max": 8784.61734,
+        "n_unfillable": 0
+      },
+      "bn_bid_l1_usd": {
+        "median": 6069.734825,
+        "max": 12096.35662,
+        "n_unfillable": 0
+      },
+      "hl_buy_1000_beyond_touch_bps": {
+        "median": 0.20414456744447623,
+        "max": 1.4648028977623244,
+        "n_unfillable": 0
+      },
+      "bn_buy_1000_beyond_touch_bps": {
+        "median": 0.0,
+        "max": 3.364433446032914,
+        "n_unfillable": 0
+      },
+      "bn_sell_1000_beyond_touch_bps": {
+        "median": 0.0,
+        "max": 0.0,
+        "n_unfillable": 0
+      },
+      "hl_buy_3000_beyond_touch_bps": {
+        "median": 0.5006859645832998,
+        "max": 2.984635661595403,
+        "n_unfillable": 0
+      },
+      "bn_buy_3000_beyond_touch_bps": {
+        "median": 0.0,
+        "max": 3.40771457585047,
+        "n_unfillable": 0
+      },
+      "bn_sell_3000_beyond_touch_bps": {
+        "median": 0.0,
+        "max": 2.263596180506181,
+        "n_unfillable": 0
+      }
+    },
+    "UNI": {
+      "samples": 12,
+      "hl_spread_bps": {
+        "median": 0.11057849171639397,
+        "max": 2.2284370856487445,
+        "n_unfillable": 0
+      },
+      "bn_spread_bps": {
+        "median": 1.1050947588676716,
+        "max": 1.1140199409563256,
+        "n_unfillable": 0
+      },
+      "hl_ask_l1_usd": {
+        "median": 638.42406,
+        "max": 7176.774479999999,
+        "n_unfillable": 0
+      },
+      "bn_ask_l1_usd": {
+        "median": 1174.518345,
+        "max": 2730.77595,
+        "n_unfillable": 0
+      },
+      "bn_bid_l1_usd": {
+        "median": 1480.843715,
+        "max": 2836.55589,
+        "n_unfillable": 0
+      },
+      "hl_buy_1000_beyond_touch_bps": {
+        "median": 0.06670914011906051,
+        "max": 0.7741142633564108,
+        "n_unfillable": 0
+      },
+      "bn_buy_1000_beyond_touch_bps": {
+        "median": 0.0,
+        "max": 2.2940591364097327,
+        "n_unfillable": 0
+      },
+      "bn_sell_1000_beyond_touch_bps": {
+        "median": 0.0,
+        "max": 1.85967630355549,
+        "n_unfillable": 0
+      },
+      "hl_buy_3000_beyond_touch_bps": {
+        "median": 0.3493360533263915,
+        "max": 1.3279865492299576,
+        "n_unfillable": 0
+      },
+      "bn_buy_3000_beyond_touch_bps": {
+        "median": 0.67467091801575,
+        "max": 2.979992942316057,
+        "n_unfillable": 0
+      },
+      "bn_sell_3000_beyond_touch_bps": {
+        "median": 0.5596706310614492,
+        "max": 2.0941687710944072,
+        "n_unfillable": 0
+      }
+    },
+    "ZEC": {
+      "samples": 12,
+      "hl_spread_bps": {
+        "median": 0.7574323218687664,
+        "max": 1.5202189115236053,
+        "n_unfillable": 0
+      },
+      "bn_spread_bps": {
+        "median": 0.07590136408657067,
+        "max": 0.454666009928184,
+        "n_unfillable": 0
+      },
+      "hl_ask_l1_usd": {
+        "median": 13763.461,
+        "max": 52355.193,
+        "n_unfillable": 0
+      },
+      "bn_ask_l1_usd": {
+        "median": 588.80025,
+        "max": 2314.29307,
+        "n_unfillable": 0
+      },
+      "bn_bid_l1_usd": {
+        "median": 711.7038950000001,
+        "max": 2907.47676,
+        "n_unfillable": 0
+      },
+      "hl_buy_1000_beyond_touch_bps": {
+        "median": 0.0,
+        "max": 0.950049214223003,
+        "n_unfillable": 0
+      },
+      "bn_buy_1000_beyond_touch_bps": {
+        "median": 0.04476452566835898,
+        "max": 1.4293668343581036,
+        "n_unfillable": 0
+      },
+      "bn_sell_1000_beyond_touch_bps": {
+        "median": 0.09289629710054842,
+        "max": 0.6029416867798124,
+        "n_unfillable": 0
+      },
+      "hl_buy_3000_beyond_touch_bps": {
+        "median": 0.0,
+        "max": 1.33007809554444,
+        "n_unfillable": 0
+      },
+      "bn_buy_3000_beyond_touch_bps": {
+        "median": 0.3175197666195789,
+        "max": 1.90194412324887,
+        "n_unfillable": 0
+      },
+      "bn_sell_3000_beyond_touch_bps": {
+        "median": 0.5299612221647745,
+        "max": 1.2937182017347872,
+        "n_unfillable": 0
+      }
+    },
+    "ZRO": {
+      "samples": 12,
+      "hl_spread_bps": {
+        "median": 3.39856837965936,
+        "max": 7.368152577435638,
+        "n_unfillable": 0
+      },
+      "bn_spread_bps": {
+        "median": 5.6785921670415505,
+        "max": 11.3700966458215,
+        "n_unfillable": 0
+      },
+      "hl_ask_l1_usd": {
+        "median": 500.24882,
+        "max": 2644.13344,
+        "n_unfillable": 0
+      },
+      "bn_ask_l1_usd": {
+        "median": 949.30814,
+        "max": 3046.01648,
+        "n_unfillable": 0
+      },
+      "bn_bid_l1_usd": {
+        "median": 982.148475,
+        "max": 2558.35122,
+        "n_unfillable": 0
+      },
+      "hl_buy_1000_beyond_touch_bps": {
+        "median": 0.44293784821800486,
+        "max": 2.4034526047889733,
+        "n_unfillable": 0
+      },
+      "bn_buy_1000_beyond_touch_bps": {
+        "median": 0.4086810962518683,
+        "max": 5.425107328033552,
+        "n_unfillable": 0
+      },
+      "bn_sell_1000_beyond_touch_bps": {
+        "median": 1.1795011098974062,
+        "max": 5.5051626518991865,
+        "n_unfillable": 0
+      },
+      "hl_buy_3000_beyond_touch_bps": {
+        "median": 1.7224311260409495,
+        "max": 4.639469490890167,
+        "n_unfillable": 0
+      },
+      "bn_buy_3000_beyond_touch_bps": {
+        "median": 4.640571569460203,
+        "max": 6.922698064980394,
+        "n_unfillable": 0
+      },
+      "bn_sell_3000_beyond_touch_bps": {
+        "median": 3.812805576632176,
+        "max": 5.61863412742558,
+        "n_unfillable": 0
+      }
+    }
+  },
+  "note": "Forward sample of current public books, not the books at the archived decision times. Beyond-touch = extra cost over the best quote, which the shadow model already charges."
+}

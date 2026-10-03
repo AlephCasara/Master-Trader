@@ -235,6 +235,81 @@ BOTS: list[dict[str, Any]] = [
     },
 ]
 
+# Exits that Freqtrade's API does not report: each strategy's custom_exit()
+# time rules and dataframe exit signals. The ROI table, stoploss and trailing
+# settings come from the running bot's /show_config instead. Keyed by bot key;
+# "strategy" names the class the container runs (insiders-ft runs
+# KillersScalpV1). tests/test_exit_policy.py parses the strategy source and
+# fails if a threshold or exit reason here drifts from it. These describe the
+# strategy's own rules: they are not exchange orders or observed exits.
+STRATEGY_EXIT_RULES: dict[str, dict[str, Any]] = {
+    "fundingfade": {"strategy": "FundingFadeV1", "rules": [
+        {"kind": "time", "after_hours": 96, "profit_below": 0.0, "reason": "v2_failed_reversion"},
+        {"kind": "time", "after_hours": 168, "profit_below": 0.01, "reason": "v2_expired_episode"},
+    ]},
+    "keltner": {"strategy": "KeltnerBounceV1", "rules": [
+        {"kind": "time", "after_hours": 120, "profit_below": 0.0, "reason": "v2_stale_bounce"},
+    ]},
+    "oi-trend": {"strategy": "OITrendPullbackV1", "rules": [
+        {"kind": "signal", "reason": "ema50_break",
+         "text": "a 1h candle that opened after entry closes below EMA50"},
+    ]},
+    "short-keltner-hl": {"strategy": "ShortKeltnerV2HL", "rules": [
+        {"kind": "time", "after_hours": 36, "profit_below": None, "reason": "time_exit_36h"},
+        {"kind": "signal", "reason": "regime_flip_or_oversold",
+         "text": "BTC's 1h close is above its 1h SMA50, or RSI(14) is below 30"},
+    ]},
+    "killers-ft": {"strategy": "KillersScalpV1", "rules": [], "receiver_driven": True},
+    "insiders-ft": {"strategy": "KillersScalpV1", "rules": [], "receiver_driven": True},
+}
+
+
+def _exit_policy(cfg: dict | None, bot_key: str) -> dict:
+    """Normalize the bot's reported exit configuration for position cards.
+
+    ``roi`` is ``[[minutes, ratio], ...]`` ascending, or None when the bot did
+    not report a table. ``trailing`` is None when the bot did not report the
+    setting, else ``{"enabled": bool, ...}``. Nothing here is an order.
+    """
+    cfg = cfg or {}
+    roi = None
+    if isinstance(cfg.get("minimal_roi"), dict):
+        roi = []
+        for minutes, ratio in cfg["minimal_roi"].items():
+            try:
+                step = [int(float(minutes)), float(ratio)]
+            except (TypeError, ValueError):
+                continue
+            if step[0] >= 0 and math.isfinite(step[1]):
+                roi.append(step)
+        roi.sort()
+
+    def ratio(name: str) -> float | None:
+        try:
+            value = float(cfg[name])
+        except (KeyError, TypeError, ValueError):
+            return None
+        return value if math.isfinite(value) else None
+
+    trailing = None
+    if "trailing_stop" in cfg:
+        trailing = {"enabled": bool(cfg.get("trailing_stop"))}
+        if trailing["enabled"]:
+            trailing.update({
+                "positive": ratio("trailing_stop_positive"),
+                "offset": ratio("trailing_stop_positive_offset") or 0.0,
+                "only_offset_reached": bool(cfg.get("trailing_only_offset_is_reached")),
+            })
+    declared = STRATEGY_EXIT_RULES.get(bot_key, {})
+    return {
+        "roi": roi,
+        "stoploss": ratio("stoploss"),
+        "trailing": trailing,
+        "rules": [dict(rule) for rule in declared.get("rules", [])],
+        "receiver_driven": bool(declared.get("receiver_driven")),
+    }
+
+
 API_USER = os.environ.get("FREQTRADE__API_SERVER__USERNAME", "")
 API_PASS = os.environ.get("FREQTRADE__API_SERVER__PASSWORD", "")
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "30"))
@@ -1418,6 +1493,7 @@ async def _poll_bot(client: httpx.AsyncClient, bot: dict) -> dict:
             "booked_pct": bp,
             "riding_pct": (None if bp is None else round(100.0 - bp, 1)),
             "is_short": t.get("is_short"),
+            "leverage": t.get("leverage"),
         }
         tp = tp_ladder.get(t.get("trade_id"))
         if tp:
@@ -1487,6 +1563,7 @@ async def _poll_bot(client: httpx.AsyncClient, bot: dict) -> dict:
         },
         "readiness": readiness,
         "execution_health": execution_health,
+        "exit_policy": _exit_policy(cfg, bot["key"]),
         "native_stop": _native_stop_verification(bot, open_trades, closed_trades),
         "position_integrity": {
             "status": "critical" if position_issues else "ok",

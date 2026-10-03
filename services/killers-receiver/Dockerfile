@@ -12,9 +12,18 @@ COPY app /app/app
 # Open-risk monitor (#105); host cron runs it in this container.
 COPY warden /app/warden
 
+# The state directory must exist, owned by the runtime user, BEFORE it is
+# declared a volume (#112). Docker seeds a new, empty named volume from the
+# image's directory, ownership included, so a fresh killers_receiver_state /
+# insiders_receiver_state is writable by uid 1000. Without this the mount
+# point came up root:root 755 and init_db crash-looped on "unable to open
+# database file". A volume that already holds data is not touched.
+RUN useradd -u 1000 -m -s /sbin/nologin receiver \
+    && mkdir -p /var/lib/killers \
+    && chown receiver:receiver /var/lib/killers
+
 VOLUME ["/var/lib/killers"]
 
-RUN useradd -u 1000 -m -s /sbin/nologin receiver
 USER receiver
 
 ENV PYTHONUNBUFFERED=1

@@ -1,0 +1,755 @@
+{
+  "variants": {
+    "OITrendPullbackV1": {
+      "full": {
+        "trades": 0,
+        "net_usdt": 0,
+        "profit_factor": null,
+        "win_rate": null
+      },
+      "full_slip": {
+        "trades": 0,
+        "net_usdt": 0,
+        "profit_factor": null,
+        "win_rate": null
+      },
+      "half1": {
+        "trades": 0,
+        "net_usdt": 0,
+        "profit_factor": null,
+        "win_rate": null
+      },
+      "half2": {
+        "trades": 0,
+        "net_usdt": 0,
+        "profit_factor": null,
+        "win_rate": null
+      },
+      "exit_reasons": {}
+    },
+    "OITrendPullbackV1CausalOI": {
+      "full": {
+        "trades": 13,
+        "net_usdt": 0.2711,
+        "profit_factor": 1.241,
+        "win_rate": 0.385
+      },
+      "full_slip": {
+        "trades": 13,
+        "net_usdt": 0.1433,
+        "profit_factor": 1.119,
+        "win_rate": 0.385
+      },
+      "half1": {
+        "trades": 5,
+        "net_usdt": 0.767,
+        "profit_factor": 6.851,
+        "win_rate": 0.6
+      },
+      "half2": {
+        "trades": 8,
+        "net_usdt": -0.496,
+        "profit_factor": 0.5,
+        "win_rate": 0.25
+      },
+      "exit_reasons": {
+        "roi": 5,
+        "ema50_break": 8
+      }
+    },
+    "OITrendPullbackV1PriceOnly": {
+      "full": {
+        "trades": 18,
+        "net_usdt": 0.9413,
+        "profit_factor": 1.877,
+        "win_rate": 0.5
+      },
+      "full_slip": {
+        "trades": 18,
+        "net_usdt": 0.7651,
+        "profit_factor": 1.657,
+        "win_rate": 0.444
+      },
+      "half1": {
+        "trades": 6,
+        "net_usdt": 0.7106,
+        "profit_factor": 4.788,
+        "win_rate": 0.5
+      },
+      "half2": {
+        "trades": 12,
+        "net_usdt": 0.2307,
+        "profit_factor": 1.26,
+        "win_rate": 0.5
+      },
+      "exit_reasons": {
+        "roi": 7,
+        "ema50_break": 11
+      }
+    },
+    "OITrendPullbackV1Placebo01": {
+      "full": {
+        "trades": 10,
+        "net_usdt": 0.0314,
+        "profit_factor": 1.06,
+        "win_rate": 0.4
+      },
+      "full_slip": {
+        "trades": 10,
+        "net_usdt": -0.0653,
+        "profit_factor": 0.889,
+        "win_rate": 0.3
+      },
+      "half1": {
+        "trades": 2,
+        "net_usdt": -0.0589,
+        "profit_factor": 0.478,
+        "win_rate": 0.5
+      },
+      "half2": {
+        "trades": 8,
+        "net_usdt": 0.0903,
+        "profit_factor": 1.219,
+        "win_rate": 0.375
+      },
+      "exit_reasons": {
+        "ema50_break": 8,
+        "roi": 2
+      }
+    },
+    "OITrendPullbackV1Placebo02": {
+      "full": {
+        "trades": 12,
+        "net_usdt": 0.3679,
+        "profit_factor": 1.321,
+        "win_rate": 0.333
+      },
+      "full_slip": {
+        "trades": 12,
+        "net_usdt": 0.2503,
+        "profit_factor": 1.204,
+        "win_rate": 0.333
+      },
+      "half1": {
+        "trades": 4,
+        "net_usdt": 0.0909,
+        "profit_factor": 1.295,
+        "win_rate": 0.25
+      },
+      "half2": {
+        "trades": 8,
+        "net_usdt": 0.2769,
+        "profit_factor": 1.33,
+        "win_rate": 0.375
+      },
+      "exit_reasons": {
+        "roi": 4,
+        "ema50_break": 7,
+        "stop_loss": 1
+      }
+    },
+    "OITrendPullbackV1Placebo03": {
+      "full": {
+        "trades": 11,
+        "net_usdt": 0.1174,
+        "profit_factor": 1.124,
+        "win_rate": 0.455
+      },
+      "full_slip": {
+        "trades": 11,
+        "net_usdt": 0.0106,
+        "profit_factor": 1.011,
+        "win_rate": 0.455
+      },
+      "half1": {
+        "trades": 3,
+        "net_usdt": 0.3089,
+        "profit_factor": 3.147,
+        "win_rate": 0.667
+      },
+      "half2": {
+        "trades": 8,
+        "net_usdt": -0.1914,
+        "profit_factor": 0.762,
+        "win_rate": 0.375
+      },
+      "exit_reasons": {
+        "roi": 3,
+        "ema50_break": 7,
+        "stop_loss": 1
+      }
+    },
+    "OITrendPullbackV1Placebo04": {
+      "full": {
+        "trades": 12,
+        "net_usdt": 0.0702,
+        "profit_factor": 1.074,
+        "win_rate": 0.417
+      },
+      "full_slip": {
+        "trades": 12,
+        "net_usdt": -0.0469,
+        "profit_factor": 0.954,
+        "win_rate": 0.333
+      },
+      "half1": {
+        "trades": 4,
+        "net_usdt": 0.0614,
+        "profit_factor": 1.327,
+        "win_rate": 0.25
+      },
+      "half2": {
+        "trades": 8,
+        "net_usdt": 0.0088,
+        "profit_factor": 1.012,
+        "win_rate": 0.5
+      },
+      "exit_reasons": {
+        "ema50_break": 7,
+        "roi": 4,
+        "stop_loss": 1
+      }
+    },
+    "OITrendPullbackV1Placebo05": {
+      "full": {
+        "trades": 10,
+        "net_usdt": 0.673,
+        "profit_factor": 2.587,
+        "win_rate": 0.5
+      },
+      "full_slip": {
+        "trades": 10,
+        "net_usdt": 0.5744,
+        "profit_factor": 2.215,
+        "win_rate": 0.5
+      },
+      "half1": {
+        "trades": 4,
+        "net_usdt": 0.3682,
+        "profit_factor": 3.809,
+        "win_rate": 0.5
+      },
+      "half2": {
+        "trades": 6,
+        "net_usdt": 0.3048,
+        "profit_factor": 2.04,
+        "win_rate": 0.5
+      },
+      "exit_reasons": {
+        "ema50_break": 6,
+        "roi": 4
+      }
+    },
+    "OITrendPullbackV1Placebo06": {
+      "full": {
+        "trades": 11,
+        "net_usdt": 0.6498,
+        "profit_factor": 1.867,
+        "win_rate": 0.636
+      },
+      "full_slip": {
+        "trades": 11,
+        "net_usdt": 0.5411,
+        "profit_factor": 1.686,
+        "win_rate": 0.636
+      },
+      "half1": {
+        "trades": 3,
+        "net_usdt": 0.5532,
+        "profit_factor": "inf",
+        "win_rate": 1.0
+      },
+      "half2": {
+        "trades": 8,
+        "net_usdt": 0.0966,
+        "profit_factor": 1.129,
+        "win_rate": 0.5
+      },
+      "exit_reasons": {
+        "ema50_break": 6,
+        "roi": 5
+      }
+    },
+    "OITrendPullbackV1Placebo07": {
+      "full": {
+        "trades": 12,
+        "net_usdt": 0.1227,
+        "profit_factor": 1.103,
+        "win_rate": 0.583
+      },
+      "full_slip": {
+        "trades": 12,
+        "net_usdt": 0.0053,
+        "profit_factor": 1.004,
+        "win_rate": 0.5
+      },
+      "half1": {
+        "trades": 3,
+        "net_usdt": 0.1604,
+        "profit_factor": 2.115,
+        "win_rate": 0.667
+      },
+      "half2": {
+        "trades": 9,
+        "net_usdt": -0.0377,
+        "profit_factor": 0.964,
+        "win_rate": 0.556
+      },
+      "exit_reasons": {
+        "ema50_break": 6,
+        "roi": 5,
+        "stop_loss": 1
+      }
+    },
+    "OITrendPullbackV1Placebo08": {
+      "full": {
+        "trades": 11,
+        "net_usdt": 0.5109,
+        "profit_factor": 2.019,
+        "win_rate": 0.364
+      },
+      "full_slip": {
+        "trades": 11,
+        "net_usdt": 0.4036,
+        "profit_factor": 1.709,
+        "win_rate": 0.364
+      },
+      "half1": {
+        "trades": 5,
+        "net_usdt": 0.3117,
+        "profit_factor": 2.662,
+        "win_rate": 0.4
+      },
+      "half2": {
+        "trades": 6,
+        "net_usdt": 0.1992,
+        "profit_factor": 1.635,
+        "win_rate": 0.333
+      },
+      "exit_reasons": {
+        "ema50_break": 7,
+        "roi": 4
+      }
+    },
+    "OITrendPullbackV1Placebo09": {
+      "full": {
+        "trades": 11,
+        "net_usdt": 0.5579,
+        "profit_factor": 2.039,
+        "win_rate": 0.455
+      },
+      "full_slip": {
+        "trades": 11,
+        "net_usdt": 0.4501,
+        "profit_factor": 1.756,
+        "win_rate": 0.455
+      },
+      "half1": {
+        "trades": 2,
+        "net_usdt": 0.1692,
+        "profit_factor": 3.119,
+        "win_rate": 0.5
+      },
+      "half2": {
+        "trades": 9,
+        "net_usdt": 0.3888,
+        "profit_factor": 1.85,
+        "win_rate": 0.444
+      },
+      "exit_reasons": {
+        "roi": 4,
+        "ema50_break": 7
+      }
+    },
+    "OITrendPullbackV1Placebo10": {
+      "full": {
+        "trades": 14,
+        "net_usdt": 2.1314,
+        "profit_factor": 5.982,
+        "win_rate": 0.643
+      },
+      "full_slip": {
+        "trades": 14,
+        "net_usdt": 1.9943,
+        "profit_factor": 5.189,
+        "win_rate": 0.643
+      },
+      "half1": {
+        "trades": 5,
+        "net_usdt": 0.8722,
+        "profit_factor": 11.929,
+        "win_rate": 0.8
+      },
+      "half2": {
+        "trades": 9,
+        "net_usdt": 1.2592,
+        "profit_factor": 4.618,
+        "win_rate": 0.556
+      },
+      "exit_reasons": {
+        "roi": 8,
+        "ema50_break": 6
+      }
+    },
+    "OITrendPullbackV1Placebo11": {
+      "full": {
+        "trades": 11,
+        "net_usdt": 0.3061,
+        "profit_factor": 1.341,
+        "win_rate": 0.545
+      },
+      "full_slip": {
+        "trades": 11,
+        "net_usdt": 0.1981,
+        "profit_factor": 1.208,
+        "win_rate": 0.455
+      },
+      "half1": {
+        "trades": 4,
+        "net_usdt": 0.952,
+        "profit_factor": "inf",
+        "win_rate": 1.0
+      },
+      "half2": {
+        "trades": 7,
+        "net_usdt": -0.6459,
+        "profit_factor": 0.281,
+        "win_rate": 0.286
+      },
+      "exit_reasons": {
+        "roi": 4,
+        "ema50_break": 7
+      }
+    },
+    "OITrendPullbackV1Placebo12": {
+      "full": {
+        "trades": 15,
+        "net_usdt": 1.7324,
+        "profit_factor": 2.965,
+        "win_rate": 0.667
+      },
+      "full_slip": {
+        "trades": 15,
+        "net_usdt": 1.5844,
+        "profit_factor": 2.695,
+        "win_rate": 0.6
+      },
+      "half1": {
+        "trades": 4,
+        "net_usdt": 0.8469,
+        "profit_factor": 17.515,
+        "win_rate": 0.75
+      },
+      "half2": {
+        "trades": 11,
+        "net_usdt": 0.8855,
+        "profit_factor": 2.067,
+        "win_rate": 0.636
+      },
+      "exit_reasons": {
+        "roi": 8,
+        "ema50_break": 7
+      }
+    },
+    "OITrendPullbackV1Placebo13": {
+      "full": {
+        "trades": 14,
+        "net_usdt": 0.9254,
+        "profit_factor": 2.005,
+        "win_rate": 0.429
+      },
+      "full_slip": {
+        "trades": 14,
+        "net_usdt": 0.7882,
+        "profit_factor": 1.789,
+        "win_rate": 0.429
+      },
+      "half1": {
+        "trades": 5,
+        "net_usdt": 0.3976,
+        "profit_factor": 2.58,
+        "win_rate": 0.4
+      },
+      "half2": {
+        "trades": 9,
+        "net_usdt": 0.5278,
+        "profit_factor": 1.788,
+        "win_rate": 0.444
+      },
+      "exit_reasons": {
+        "roi": 5,
+        "ema50_break": 9
+      }
+    },
+    "OITrendPullbackV1Placebo14": {
+      "full": {
+        "trades": 14,
+        "net_usdt": 0.8935,
+        "profit_factor": 2.481,
+        "win_rate": 0.429
+      },
+      "full_slip": {
+        "trades": 14,
+        "net_usdt": 0.7569,
+        "profit_factor": 2.113,
+        "win_rate": 0.429
+      },
+      "half1": {
+        "trades": 4,
+        "net_usdt": 0.8167,
+        "profit_factor": 11.033,
+        "win_rate": 0.75
+      },
+      "half2": {
+        "trades": 10,
+        "net_usdt": 0.0768,
+        "profit_factor": 1.147,
+        "win_rate": 0.3
+      },
+      "exit_reasons": {
+        "roi": 5,
+        "ema50_break": 9
+      }
+    },
+    "OITrendPullbackV1Placebo15": {
+      "full": {
+        "trades": 15,
+        "net_usdt": 1.0387,
+        "profit_factor": 2.07,
+        "win_rate": 0.533
+      },
+      "full_slip": {
+        "trades": 15,
+        "net_usdt": 0.8914,
+        "profit_factor": 1.858,
+        "win_rate": 0.533
+      },
+      "half1": {
+        "trades": 4,
+        "net_usdt": 0.8469,
+        "profit_factor": 17.515,
+        "win_rate": 0.75
+      },
+      "half2": {
+        "trades": 11,
+        "net_usdt": 0.1918,
+        "profit_factor": 1.209,
+        "win_rate": 0.455
+      },
+      "exit_reasons": {
+        "roi": 7,
+        "ema50_break": 8
+      }
+    },
+    "OITrendPullbackV1Placebo16": {
+      "full": {
+        "trades": 14,
+        "net_usdt": 0.4696,
+        "profit_factor": 1.45,
+        "win_rate": 0.5
+      },
+      "full_slip": {
+        "trades": 14,
+        "net_usdt": 0.3325,
+        "profit_factor": 1.298,
+        "win_rate": 0.429
+      },
+      "half1": {
+        "trades": 4,
+        "net_usdt": 0.3916,
+        "profit_factor": 4.634,
+        "win_rate": 0.5
+      },
+      "half2": {
+        "trades": 10,
+        "net_usdt": 0.078,
+        "profit_factor": 1.083,
+        "win_rate": 0.5
+      },
+      "exit_reasons": {
+        "ema50_break": 8,
+        "roi": 6
+      }
+    },
+    "OITrendPullbackV1Placebo17": {
+      "full": {
+        "trades": 14,
+        "net_usdt": 0.0367,
+        "profit_factor": 1.026,
+        "win_rate": 0.429
+      },
+      "full_slip": {
+        "trades": 14,
+        "net_usdt": -0.101,
+        "profit_factor": 0.932,
+        "win_rate": 0.357
+      },
+      "half1": {
+        "trades": 3,
+        "net_usdt": -0.2516,
+        "profit_factor": 0.0,
+        "win_rate": 0.0
+      },
+      "half2": {
+        "trades": 11,
+        "net_usdt": 0.2883,
+        "profit_factor": 1.248,
+        "win_rate": 0.545
+      },
+      "exit_reasons": {
+        "ema50_break": 9,
+        "roi": 4,
+        "stop_loss": 1
+      }
+    },
+    "OITrendPullbackV1Placebo18": {
+      "full": {
+        "trades": 12,
+        "net_usdt": 0.242,
+        "profit_factor": 1.228,
+        "win_rate": 0.417
+      },
+      "full_slip": {
+        "trades": 12,
+        "net_usdt": 0.124,
+        "profit_factor": 1.109,
+        "win_rate": 0.333
+      },
+      "half1": {
+        "trades": 5,
+        "net_usdt": 0.7904,
+        "profit_factor": 8.335,
+        "win_rate": 0.6
+      },
+      "half2": {
+        "trades": 7,
+        "net_usdt": -0.5484,
+        "profit_factor": 0.426,
+        "win_rate": 0.286
+      },
+      "exit_reasons": {
+        "roi": 4,
+        "ema50_break": 8
+      }
+    },
+    "OITrendPullbackV1Placebo19": {
+      "full": {
+        "trades": 15,
+        "net_usdt": 0.6594,
+        "profit_factor": 1.598,
+        "win_rate": 0.467
+      },
+      "full_slip": {
+        "trades": 15,
+        "net_usdt": 0.5122,
+        "profit_factor": 1.434,
+        "win_rate": 0.467
+      },
+      "half1": {
+        "trades": 5,
+        "net_usdt": 0.7369,
+        "profit_factor": 5.571,
+        "win_rate": 0.6
+      },
+      "half2": {
+        "trades": 10,
+        "net_usdt": -0.0775,
+        "profit_factor": 0.918,
+        "win_rate": 0.4
+      },
+      "exit_reasons": {
+        "roi": 6,
+        "ema50_break": 9
+      }
+    },
+    "OITrendPullbackV1Placebo20": {
+      "full": {
+        "trades": 9,
+        "net_usdt": 0.9601,
+        "profit_factor": 4.164,
+        "win_rate": 0.667
+      },
+      "full_slip": {
+        "trades": 9,
+        "net_usdt": 0.8719,
+        "profit_factor": 3.587,
+        "win_rate": 0.556
+      },
+      "half1": {
+        "trades": 2,
+        "net_usdt": 0.1676,
+        "profit_factor": 3.058,
+        "win_rate": 0.5
+      },
+      "half2": {
+        "trades": 7,
+        "net_usdt": 0.7925,
+        "profit_factor": 4.57,
+        "win_rate": 0.714
+      },
+      "exit_reasons": {
+        "ema50_break": 4,
+        "roi": 5
+      }
+    }
+  },
+  "reading_rule": {
+    "by_part": {
+      "full": {
+        "profit_factor": {
+          "gate": 1.241,
+          "price_only": 1.877,
+          "placebo_median": 1.867,
+          "placebo_p90": 2.965,
+          "gate_percentile_in_placebo": 0.3,
+          "beats_control_and_p90": false
+        },
+        "net_usdt": {
+          "gate": 0.2711,
+          "price_only": 0.9413,
+          "placebo_median": 0.5579,
+          "placebo_p90": 1.0387,
+          "gate_percentile_in_placebo": 0.3,
+          "beats_control_and_p90": false
+        }
+      },
+      "half1": {
+        "profit_factor": {
+          "gate": 6.851,
+          "price_only": 4.788,
+          "placebo_median": 3.809,
+          "placebo_p90": 17.515,
+          "gate_percentile_in_placebo": 0.65,
+          "beats_control_and_p90": false
+        },
+        "net_usdt": {
+          "gate": 0.767,
+          "price_only": 0.7106,
+          "placebo_median": 0.3916,
+          "placebo_p90": 0.8469,
+          "gate_percentile_in_placebo": 0.7,
+          "beats_control_and_p90": false
+        }
+      },
+      "half2": {
+        "profit_factor": {
+          "gate": 0.5,
+          "price_only": 1.26,
+          "placebo_median": 1.219,
+          "placebo_p90": 2.067,
+          "gate_percentile_in_placebo": 0.1,
+          "beats_control_and_p90": false
+        },
+        "net_usdt": {
+          "gate": -0.496,
+          "price_only": 0.2307,
+          "placebo_median": 0.1918,
+          "placebo_p90": 0.7925,
+          "gate_percentile_in_placebo": 0.1,
+          "beats_control_and_p90": false
+        }
+      }
+    },
+    "discriminative_power": "not demonstrated"
+  }
+}

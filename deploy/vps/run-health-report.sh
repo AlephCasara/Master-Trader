@@ -51,5 +51,14 @@ export FT_DIR="$STATE_DIR"
 # the Mac claude-assistant convention before the migration).
 export WEBHOOK_URL="http://localhost:8088/freqtrade/event"
 
+# trade-webhook's shared secret for /freqtrade/event (#97), sent as
+# X-Notify-Token by ft_userdata/webhook_notify.py. Read only that one key:
+# never source the file, it also holds the Telegram bot token.
+OPS_ENV_FILE="/etc/lake/ops-bot.env"
+if [ -r "$OPS_ENV_FILE" ]; then
+  TRADE_WEBHOOK_NOTIFY_TOKEN="$(sed -n 's/^TRADE_WEBHOOK_NOTIFY_TOKEN=//p' "$OPS_ENV_FILE" | tail -n 1 | tr -d '\r')"
+  export TRADE_WEBHOOK_NOTIFY_TOKEN
+fi
+
 cd "$CODE_DIR"
 exec /usr/bin/python3 strategy_health_report.py "$@" >> "$LOG_DIR/health_report.log" 2>&1
