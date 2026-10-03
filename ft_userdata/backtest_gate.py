@@ -39,7 +39,6 @@ DATA_DIR = Path.home() / "ft_userdata" / "user_data" / "data"
 RESULTS_DIR = Path.home() / "ft_userdata" / "user_data" / "backtest_results"
 LOGS_DIR = Path.home() / "ft_userdata" / "logs"
 FT_DIR = Path.home() / "ft_userdata"
-WEBHOOK_URL = "http://localhost:8088/webhooks/freqtrade"
 API_USER = "freqtrader"
 API_PASS = "mastertrader"
 
@@ -583,14 +582,8 @@ def format_report(evaluations: list[dict]) -> str:
 
 
 def send_telegram(message: str) -> bool:
-    import requests as req
-    try:
-        payload = {"type": "status", "status": message}
-        resp = req.post(WEBHOOK_URL, data=payload, timeout=10)
-        return resp.status_code in (200, 201, 204)
-    except Exception as e:
-        log.error("Failed to send report: %s", e)
-        return False
+    from webhook_notify import send_status
+    return send_status(message, bot_name="backtest-gate")
 
 
 # ---------------------------------------------------------------------------

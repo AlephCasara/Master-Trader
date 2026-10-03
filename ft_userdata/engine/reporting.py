@@ -16,9 +16,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-import requests
+from webhook_notify import send_status
 
-from .registry import MODES, RESULTS_DIR, WEBHOOK_URL
+from .registry import MODES, RESULTS_DIR
 
 log = logging.getLogger("engine.reporting")
 
@@ -572,9 +572,7 @@ def _write_json(path: Path, data: dict) -> None:
 
 def send_telegram(message: str) -> bool:
     """
-    Send message to Telegram via webhook.
-
-    Posts to WEBHOOK_URL with payload: {"type": "status", "status": message}
+    Send message to Telegram through trade-webhook (see webhook_notify).
 
     Args:
         message: The message text to send.
@@ -582,22 +580,7 @@ def send_telegram(message: str) -> bool:
     Returns:
         True on success, False on failure.
     """
-    try:
-        resp = requests.post(
-            WEBHOOK_URL,
-            json={"type": "status", "status": message},
-            timeout=15,
-        )
-        if resp.status_code == 200:
-            log.info("Telegram message sent (%d chars)", len(message))
-            return True
-        else:
-            log.warning("Telegram webhook returned %d: %s",
-                        resp.status_code, resp.text[:200])
-            return False
-    except requests.RequestException as e:
-        log.error("Failed to send Telegram message: %s", e)
-        return False
+    return send_status(message, bot_name="backtest-engine", timeout=15)
 
 
 # ── Main Entry Point ─────────────────────────────────────────────────────────

@@ -54,9 +54,10 @@ chmod +x /home/ubuntu/master-trader/run-health-report.sh
 
 `run-health-report.sh` runs `strategy_health_report.py` from `runtime/ft_userdata/`
 (Dokploy-managed code, auto-updates on git push). It pulls rotated REST creds
-from `ft-keltner-bounce` via `docker exec`. Posts to the Mac claude-assistant
-webhook over Tailscale; once that assistant migrates to VPS, change
-`WEBHOOK_URL` to `http://localhost:8088/webhooks/freqtrade`.
+from `ft-keltner-bounce` via `docker exec`. It posts to trade-webhook on the host
+loopback, `WEBHOOK_URL=http://localhost:8088/freqtrade/event`. That is also the
+default of every report script that posts to Telegram: they all go through
+`ft_userdata/webhook_notify.py`, which reads `WEBHOOK_URL` and sends JSON.
 
 Test on demand:
 ```bash

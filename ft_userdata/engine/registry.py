@@ -15,7 +15,6 @@ DATA_DIR = FT_DIR / "user_data" / "data"
 RESULTS_DIR = FT_DIR / "engine_results"
 LOGS_DIR = FT_DIR / "logs"
 
-WEBHOOK_URL = "http://localhost:8088/webhooks/freqtrade"
 API_USER = "freqtrader"
 API_PASS = "mastertrader"
 

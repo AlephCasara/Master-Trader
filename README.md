@@ -215,9 +215,12 @@ Dashboard product rules and the design system live in [PRODUCT.md](PRODUCT.md) a
 
 ### Telegram Notifications
 
-The system sends reports via HTTP webhook. If you have a Telegram bot:
-1. Set `WEBHOOK_URL` in each automation script to your bot's webhook endpoint
-2. The webhook receives `POST` with `{"type": "status", "status": "message text"}`
+Report scripts post to `services/trade-webhook`, which appends each event to the lake and forwards a
+one-line summary to Telegram. They all send through `ft_userdata/webhook_notify.py`:
+1. `WEBHOOK_URL` sets the endpoint for every script. The default, `http://localhost:8088/freqtrade/event`,
+   is trade-webhook's loopback port on the VPS
+2. The body is JSON: `{"type": "status", "bot_name": "<script>", "status": "message text"}`. The
+   Telegram line is cut at 200 characters; the full text is in the lake file `<bot_name>.jsonl`
 3. Or set `telegram.enabled: true` in strategy configs for native Freqtrade Telegram
 
 ### Claude Assistant (Palmer's Setup)
