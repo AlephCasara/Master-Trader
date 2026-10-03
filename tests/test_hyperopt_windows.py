@@ -17,7 +17,7 @@ FT_DIR = Path(__file__).parent.parent / "ft_userdata"
 DATE_FMT = "%Y%m%d"
 STRATEGY = "ClucHAnix"
 
-# automation_scheduler.sh:47 downloads 90 days at Sun 03:00; hyperopt runs 06:00.
+# automation_scheduler.sh's (retired, #100) data download fetched 90 days at Sun 03:00; hyperopt ran 06:00.
 DOWNLOADED_HISTORY_DAYS = 90
 
 

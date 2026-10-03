@@ -22,9 +22,28 @@ Single canonical project root: `/home/ubuntu/master-trader/`.
 ```
 
 Live runtime is owned by Dokploy (UI: `compose-bypass-mobile-port-fbk1m6`).
-Containers: `ft-keltner-bounce` (8095), `ft-funding-fade` (8096),
-`ft-funding-refresh`, `ft-grafana`, `ft-prometheus`, `ft-metrics-exporter`,
-`ft-grafana-bridge`. All bound to `127.0.0.1`; tailnet-only access.
+The 13 services of `ft_userdata/docker-compose.prod.yml`: bots `ft-keltner-bounce` (8095),
+`ft-funding-fade` (8096), `ft-oi-trend-pullback` (8102), `ft-killers-scalp` (8099),
+`ft-insiders-scalp` (8098), `ft-short-keltner-hl-live` (8103); receivers `killers-receiver`
+(8089) and `insiders-receiver` (8090); `ft-hl-gateway`, `ft-funding-refresh`,
+`ft-metrics-exporter` (9090), `ft-prometheus` (9091), and `ft-dashboard`. The dashboard is
+served by Traefik at the public URL; every published port binds `127.0.0.1`. trade-webhook
+(`127.0.0.1:8088`) runs from its own compose file, `services/trade-webhook/`.
+
+Host scheduled jobs (`crontab -l` as `ubuntu`, checked 2026-10-02):
+
+```
+0 23 * * * /home/ubuntu/master-trader/run-health-report.sh
+*/5 * * * * docker exec killers-receiver python3 /app/warden/risk_warden.py >> /home/ubuntu/killers-warden.log 2>&1
+```
+
+The health-report line runs an installed copy of `deploy/vps/run-health-report.sh`, not the file
+in `runtime/`. Re-copy it after that script changes; the copy on the host was older than the repo
+version on 2026-10-02. The warden line is documented in `services/killers-receiver/warden/README.md`.
+Two systemd timers (`master-trader-retention-shadow`, `master-trader-retention-accounting`, units
+in `research/profit_retention/systemd/`) run the read-only profit-retention collectors. Nothing
+else master-trader related is scheduled on the host. `ft_userdata/automation_scheduler.sh` is not
+installed and refuses to run (#100).
 
 Live trade DB lives in docker volume
 `compose-bypass-mobile-port-fbk1m6_ft_user_data` (NOT in `runtime/`).
