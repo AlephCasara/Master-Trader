@@ -506,6 +506,13 @@ services:
     restart: always
     container_name: ft-funding-refresh
     user: 1000:1000
+    environment:
+      # One Telegram alert per run for funding rows quarantined by
+      # download_funding_rates.py (#113). trade-webhook already joins this
+      # project's default network, so no extra network is needed.
+      FUNDING_NOTIFY_URL: http://trade-webhook:8088/test/notify
+      # Same shared value as killers-/insiders-receiver and trade-webhook (#59).
+      TRADE_WEBHOOK_NOTIFY_TOKEN: ${TRADE_WEBHOOK_NOTIFY_TOKEN:-}
     volumes:
       - ft_user_data:/app/user_data
       - ./download_funding_rates.py:/app/download_funding_rates.py:ro
