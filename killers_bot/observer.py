@@ -90,7 +90,8 @@ class Config:
             self.confidence_gate = confidence_gate.load_config()
         except confidence_gate.GateConfigError as e:
             logger.error("[CONF-GATE] config invalida, gate DESLIGADO: %s", e)
-            self.confidence_gate = confidence_gate.disabled_config()
+            self.confidence_gate = confidence_gate.disabled_config(
+                confidence_gate.INVALID_CONFIG)
 
 
 def _required(name: str) -> str:
