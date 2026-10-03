@@ -342,6 +342,12 @@ def build_report_card(strategy_name: str, results: dict) -> str:
         pert_display = " (".join(pert_parts[:1]) + (" (" + ", ".join(pert_parts[1:]) + ")" if len(pert_parts) > 1 else "")
     else:
         pert_display = "SKIPPED"
+    # A variant whose backtest failed is not measured; say so whenever one did.
+    pert_attempted = _safe_get(results, "robustness", "perturbation", "variants_attempted")
+    pert_succeeded = _safe_get(results, "robustness", "perturbation", "variants_succeeded")
+    pert_note = None
+    if pert_attempted and pert_succeeded is not None and pert_succeeded < pert_attempted:
+        pert_note = f"{pert_succeeded}/{pert_attempted} variant backtests ran"
 
     # Recommendation details
     rec_display = recommendation
@@ -372,6 +378,8 @@ def build_report_card(strategy_name: str, results: dict) -> str:
     lines.append(_box_line(f"Consensus:      {consensus_display}"))
     lines.append(_box_line(f"Monte Carlo:    {mc_display}"))
     lines.append(_box_line(f"Perturbation:   {pert_display}"))
+    if pert_note:
+        lines.append(_box_line(f"                {pert_note}"))
     lines.append(_box_line(""))
     lines.append(_box_line(f"RECOMMENDATION: {rec_display}"))
 
