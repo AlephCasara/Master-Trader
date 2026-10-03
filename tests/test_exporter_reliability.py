@@ -562,3 +562,67 @@ def test_breaker_watch_covers_unknown_membership_but_not_an_all_dry_fleet(export
     for t in range(1200, 2200, 60):
         exporter.watch_breaker({"errors": ["Live account membership is not fully observed"]}, False, t)
     assert [m[1] for m in webhook.messages()] == ["fleet-breaker-watch"]
+
+
+def _breached_fleet(exporter, monkeypatch, failing):
+    """Two live bots, 20% below the peak; `failing` scripts stop_bot results per service."""
+    clock = types.SimpleNamespace(now=1_800_000_000.0)
+    monkeypatch.setattr(exporter, "time", types.SimpleNamespace(time=lambda: clock.now))
+    monkeypatch.setattr(exporter, "_save_peak_state", lambda: None)
+    exporter._live_bots = [FUNDING, _registry_bot(exporter, "InsidersScalpV1")]
+    exporter._live_initial_capital = 400.0
+    exporter._equity_basis = "accounts-v1"
+    exporter._portfolio_peak = 500.0
+    stops, alerts = [], []
+
+    def stop(bot):
+        stops.append(bot["strategy"])
+        return not failing.get(bot["service"]) or not failing[bot["service"]].pop(0)
+
+    monkeypatch.setattr(exporter, "stop_bot", stop)
+    monkeypatch.setattr(exporter, "send_circuit_breaker_alert", lambda *a: alerts.append(a))
+    return clock, stops, alerts
+
+
+def test_failed_halt_is_retried_alone_without_repeating_the_alert(exporter, monkeypatch):
+    """Codex review of #141: one failed halt re-stopped every bot and re-sent
+    the global alert on every 60-second scrape."""
+    clock, stops, alerts = _breached_fleet(
+        exporter, monkeypatch, failing={"ft-insiders-scalp": [True, True, False]})
+    exporter.check_circuit_breaker(0.0, 400.0)
+    assert stops == ["FundingFadeV1", "InsidersScalpV1"] and len(alerts) == 1
+
+    for _ in range(3):  # Insiders fails once more, then succeeds
+        clock.now += 60
+        exporter.check_circuit_breaker(0.0, 400.0)
+    assert stops[2:] == ["InsidersScalpV1", "InsidersScalpV1"], "only the failed halt is retried"
+    assert len(alerts) == 1, "a retry is not a new breach"
+
+    clock.now += 60
+    exporter.check_circuit_breaker(0.0, 400.0)
+    assert len(stops) == 4 and len(alerts) == 1, "nothing left to retry"
+
+    clock.now += exporter.CIRCUIT_BREAKER_COOLDOWN
+    exporter.check_circuit_breaker(0.0, 400.0)
+    assert len(alerts) == 2, "the hourly re-halt and reminder while still breached is unchanged"
+    assert stops[4:] == ["FundingFadeV1", "InsidersScalpV1"]
+
+
+def test_pending_halts_clear_when_the_breach_recovers(exporter, monkeypatch):
+    clock, stops, alerts = _breached_fleet(exporter, monkeypatch, failing={"ft-insiders-scalp": [True]})
+    exporter.check_circuit_breaker(0.0, 400.0)
+    assert exporter._pending_halts == {"ft-insiders-scalp"}
+    clock.now += 60
+    exporter.check_circuit_breaker(0.0, 495.0)  # 1% drawdown: the breaker resets
+    assert exporter._circuit_breaker_triggered is False
+    assert exporter._pending_halts == set(), "no halt is retried once the breach has cleared"
+
+
+def test_pending_halts_survive_an_exporter_restart(exporter, monkeypatch, tmp_path):
+    monkeypatch.setattr(exporter, "PEAK_STATE_FILE", tmp_path / "portfolio_peak.json")
+    exporter._circuit_breaker_triggered = True
+    exporter._pending_halts = {"ft-insiders-scalp"}
+    exporter._save_peak_state()
+    exporter._pending_halts = set()
+    exporter._load_peak_state()
+    assert exporter._pending_halts == {"ft-insiders-scalp"}

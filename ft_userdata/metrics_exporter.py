@@ -128,6 +128,9 @@ _portfolio_peak = 0.0
 _peak_basis = 0.0
 _circuit_breaker_triggered = False
 _last_trigger_time = 0.0
+# Services whose /stopentry failed during the current breach. Only these are
+# retried each cycle; the alert stays on the hourly cooldown.
+_pending_halts: set[str] = set()
 _equity_basis = "legacy"
 _account_transfer_total = 0.0
 ACCOUNT_STATE_FILE = PEAK_STATE_FILE.with_name("account_health.json")
@@ -138,7 +141,7 @@ def _load_peak_state() -> None:
     """Restore high-water mark from disk so a restart mid-drawdown doesn't
     erase the real peak. Without this, _portfolio_peak resets every restart
     and the breaker silently shifts its threshold downward."""
-    global _portfolio_peak, _peak_basis, _circuit_breaker_triggered, _last_trigger_time, _equity_basis, _account_transfer_total
+    global _portfolio_peak, _peak_basis, _circuit_breaker_triggered, _last_trigger_time, _equity_basis, _account_transfer_total, _pending_halts
     try:
         if PEAK_STATE_FILE.exists():
             with open(PEAK_STATE_FILE) as f:
@@ -149,6 +152,7 @@ def _load_peak_state() -> None:
             _last_trigger_time = float(state.get("last_trigger_time", 0.0))
             _equity_basis = state.get("equity_basis", "legacy")
             _account_transfer_total = float(state.get("account_transfer_total", 0))
+            _pending_halts = set(state.get("pending_halts", []))
             log.info(
                 "Restored portfolio peak from %s: $%.2f (triggered=%s)",
                 PEAK_STATE_FILE, _portfolio_peak, _circuit_breaker_triggered,
@@ -171,6 +175,7 @@ def _save_peak_state() -> None:
                 "saved_at": time.time(),
                 "equity_basis": _equity_basis,
                 "account_transfer_total": _account_transfer_total,
+                "pending_halts": sorted(_pending_halts),
             }, f)
         os.replace(tmp, PEAK_STATE_FILE)
     except Exception as exc:
@@ -672,7 +677,7 @@ def check_circuit_breaker(live_pnl: float, account_equity: float | None = None, 
     Inputs are scoped to live (non-dry-run) bots only. The dry-run sleeve has
     no real money and must not influence the breaker.
     """
-    global _portfolio_peak, _peak_basis, _circuit_breaker_triggered, _last_trigger_time, _equity_basis, _account_transfer_total
+    global _portfolio_peak, _peak_basis, _circuit_breaker_triggered, _last_trigger_time, _equity_basis, _account_transfer_total, _pending_halts
 
     if not _live_bots or (account_equity is None and _live_initial_capital <= 0):
         # No live bots configured — breaker is a no-op. Don't update Prometheus
@@ -749,13 +754,23 @@ def check_circuit_breaker(live_pnl: float, account_equity: float | None = None, 
                 drawdown_pct, CIRCUIT_BREAKER_PCT, portfolio_value,
                 _portfolio_peak, _live_initial_capital,
             )
-            succeeded = [stop_bot(bot) for bot in _live_bots]
+            _pending_halts = {bot["service"] for bot in _live_bots if not stop_bot(bot)}
             send_circuit_breaker_alert(portfolio_value, drawdown_pct)
             _circuit_breaker_triggered = True
-            _last_trigger_time = now if all(succeeded) else 0  # retry failed entry halts next cycle
+            _last_trigger_time = now
+            _save_peak_state()
+        elif _pending_halts:
+            # Retry only the halts that failed. Re-stopping every bot and
+            # re-sending the alert each 60s cycle would page indefinitely
+            # whenever one bot was unreachable.
+            retry = [bot for bot in _live_bots if bot["service"] in _pending_halts]
+            _pending_halts = {bot["service"] for bot in retry if not stop_bot(bot)}
+            if _pending_halts:
+                log.warning("Entry halt still failing for %s", ", ".join(sorted(_pending_halts)))
             _save_peak_state()
     elif _circuit_breaker_triggered and drawdown_pct < CIRCUIT_BREAKER_PCT * 0.5:
         _circuit_breaker_triggered = False
+        _pending_halts = set()
         log.info("Circuit breaker reset: drawdown recovered to %.1f%%", drawdown_pct)
         _save_peak_state()
 
