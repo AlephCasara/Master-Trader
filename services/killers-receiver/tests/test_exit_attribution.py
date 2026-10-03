@@ -287,6 +287,35 @@ def test_rejected_request_does_not_outrank_an_accepted_one():
     assert exits[0]["reason"] == "posted_sl"
 
 
+def _insert_request(conn, pos_id, status, answered=True, reason="channel_close"):
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        "INSERT INTO exit_requests (pos_id, ft_trade_id, reason, ordertype, "
+        "submitted_at, answered_at, ft_status) VALUES (?, 9, ?, 'market', ?, ?, ?)",
+        (pos_id, reason, now, now if answered else None, status))
+
+
+@pytest.mark.parametrize("status", [400, 502])
+def test_refused_request_never_claims_a_nearby_manual_order(status):
+    """Review finding: with no accepted request in the window, matching fell
+    back to refused ones, so a manual close next to a Freqtrade-refused
+    channel close was labelled channel_close."""
+    _cfg, conn, pos_id = _setup()
+    _insert_request(conn, pos_id, status)
+    exits = _attribute(conn, pos_id, _trade([_order("op", _ms())]))
+    assert (exits[0]["reason"], exits[0]["source"]) == ("manual", "outside_receiver")
+
+
+@pytest.mark.parametrize("status,answered", [(None, False), (0, True), (500, True)])
+def test_submission_with_unknown_outcome_still_claims_its_order(status, answered):
+    """A raised call, a transport failure or an unhandled Freqtrade error may
+    still have created the order, so those submissions stay eligible."""
+    _cfg, conn, pos_id = _setup()
+    _insert_request(conn, pos_id, status, answered=answered, reason="posted_sl")
+    exits = _attribute(conn, pos_id, _trade([_order("m", _ms())]))
+    assert exits[0]["reason"] == "posted_sl"
+
+
 # ── endpoint ───────────────────────────────────────────────────────────────
 
 

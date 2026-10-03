@@ -1887,6 +1887,14 @@ def _tp_label(row: dict, signal_targets: list) -> str:
     return f"tp{best[0]}" if best else f"tp@{price:g}"
 
 
+def _exit_request_refused(status) -> bool:
+    """An explicit Freqtrade refusal: 4xx, or 502, which its API returns for
+    an RPCException raised before any exit order is created. NULL (the call
+    raised), 0 (transport/synthetic) and other 5xx (an unhandled error that
+    may follow the order write) stay unknown and may still own an order."""
+    return isinstance(status, int) and (400 <= status < 500 or status == 502)
+
+
 def attribute_exit_orders(trade: dict, target_rows: list, requests: list,
                           signal_targets: list,
                           ledger_since: Optional[str]) -> list[dict]:
@@ -1901,6 +1909,8 @@ def attribute_exit_orders(trade: dict, target_rows: list, requests: list,
          was never observed) whose submit→answer window contains the order.
          Freqtrade does not echo a market exit's order id, and Hyperliquid
          market orders are recorded as `limit`, so the window is the match.
+         Submissions Freqtrade explicitly refused are not candidates; an
+         accepted one outranks one whose outcome is unknown.
       5. otherwise a force_exit order is `manual`: every receiver-submitted
          exit is in 1, 2 or 4, so it was placed outside the receiver. Orders
          older than the ledger (`exit_ledger_since`) are `unattributed`.
@@ -1923,6 +1933,8 @@ def attribute_exit_orders(trade: dict, target_rows: list, requests: list,
             continue
         end = _iso_to_ms(req.get("answered_at"))
         status = req.get("ft_status")
+        if _exit_request_refused(status):
+            continue  # Freqtrade said no: it owns no order, never a neighbour's
         windows.append({
             "key": ("request", req["request_id"]), "reason": req["reason"],
             "request_id": req["request_id"],
