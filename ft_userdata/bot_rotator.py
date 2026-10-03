@@ -36,10 +36,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-import requests
 import numpy as np
 
 from api_utils import api_get as _api_get_with_retry
+from webhook_notify import send_status
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -89,7 +89,6 @@ MIN_TRADES_PER_DAY = 0.2  # At least 1 trade per 5 days
 
 STATE_FILE = Path.home() / "ft_userdata" / "rotation_state.json"
 LOGS_DIR = Path.home() / "ft_userdata" / "logs"
-WEBHOOK_URL = "http://localhost:8088/webhooks/freqtrade"
 
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -345,14 +344,7 @@ def send_report(evaluations: list[dict], actions: list[str], dry_run: bool = Fal
     message = "\n".join(lines)
     log.info("\n%s", message)
 
-    try:
-        r = requests.post(WEBHOOK_URL, data={"type": "status", "status": message}, timeout=10)
-        if r.status_code in (200, 201, 204):
-            log.info("Report sent to Telegram")
-        else:
-            log.warning("Webhook returned %d", r.status_code)
-    except Exception as e:
-        log.warning("Could not send report: %s", e)
+    send_status(message, bot_name="bot-rotator")
 
 
 # ---------------------------------------------------------------------------
