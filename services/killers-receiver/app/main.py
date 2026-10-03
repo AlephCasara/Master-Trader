@@ -527,10 +527,15 @@ CREATE TABLE IF NOT EXISTS ingress_events (
     signal_id    INTEGER,
     raw_payload  TEXT NOT NULL,              -- full {msg, classification} json
     final_action TEXT,                       -- handler outcome (force_enter,
-                                              -- skipped, audit_only, ignored,
-                                              -- error, or NULL if crashed)
+                                              -- entry_rejected, force_exit,
+                                              -- exit_rejected, skipped,
+                                              -- audit_only, ignored, error,
+                                              -- or NULL if crashed)
     final_status INTEGER,                    -- HTTP status returned to observer
-    completed_at TEXT
+    completed_at TEXT,
+    executor_status INTEGER,                 -- Freqtrade status of the call this
+                                              -- delivery made (NULL: no call)
+    executor_error TEXT                      -- Freqtrade error when not 2xx
 );
 CREATE INDEX IF NOT EXISTS idx_ingress_kind ON ingress_events(kind);
 CREATE INDEX IF NOT EXISTS idx_ingress_action ON ingress_events(final_action);
@@ -554,7 +559,9 @@ CREATE TABLE IF NOT EXISTS ingress_revisions (
     raw_payload   TEXT NOT NULL,             -- full {msg, classification} json
     final_action  TEXT,                      -- this delivery's own outcome
     final_status  INTEGER,                   -- NULL if the handler died
-    completed_at  TEXT
+    completed_at  TEXT,
+    executor_status INTEGER,                 -- as ingress_events (#125)
+    executor_error  TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_ingress_rev_msg ON ingress_revisions(msg_id, rev_id);
 
@@ -605,6 +612,14 @@ def init_db(path: str) -> sqlite3.Connection:
     conn.executescript(POSITION_SCHEMA)
     from .tp_migration import SCHEMA as MIGRATION_SCHEMA
     conn.executescript(MIGRATION_SCHEMA)
+    # #125: executor outcome columns on the ingress audit. NULL on rows
+    # written before the migration; existing rows are never rewritten.
+    for table in ("ingress_events", "ingress_revisions"):
+        cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        for column, ctype in (("executor_status", "INTEGER"),
+                              ("executor_error", "TEXT")):
+            if column not in cols:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ctype}")
     target_columns = {r[1] for r in conn.execute("PRAGMA table_info(target_orders)")}
     for column in ("submitted_at", "prior_order_ids"):
         if column not in target_columns:
@@ -2229,7 +2244,9 @@ async def list_ingress(limit: int = 50, kind: Optional[str] = None,
     decided + the raw classification. Use this when investigating a
     "where did that signal go?" — even crashes leave a row."""
     conn: sqlite3.Connection = app.state.conn
-    sql = "SELECT ingress_id, msg_id, received_at, msg_date, kind, symbol, signal_id, final_action, final_status, completed_at FROM ingress_events WHERE 1=1"
+    sql = ("SELECT ingress_id, msg_id, received_at, msg_date, kind, symbol, signal_id, "
+           "final_action, final_status, completed_at, executor_status, executor_error "
+           "FROM ingress_events WHERE 1=1")
     params: list = []
     if kind is not None:
         sql += " AND kind=?"; params.append(kind)
@@ -2556,7 +2573,7 @@ def _format_event_summary(cfg: Config, payload: EventPayload, result: dict) -> O
     if action == "deduped":
         return None
 
-    if action == "force_enter":
+    if action in ("force_enter", "entry_rejected"):
         pos = result.get("pos_id", "?")
         ft  = (result.get("ft") or {}).get("status", "?")
         # A non-2xx Freqtrade response means NO position was opened (e.g. the
@@ -2596,6 +2613,13 @@ def _format_event_summary(cfg: Config, payload: EventPayload, result: dict) -> O
         cap = result.get("max_slippage_pct", "?")
         return (f"🚫 {head} SKIPPED · #{sig} {sym} {direc}  · "
                 f"entry bounds missing, slippage cap {cap}% enabled — fail-closed")
+    if action == "exit_rejected":
+        pos = result.get("pos_id", "?")
+        verb = "CLOSE_PARTIAL" if kind == "close_partial" else "CLOSE_FULL"
+        ft_status, ft_error = _executor_outcome(result)
+        tail = f" · {ft_error[:160]}" if ft_error else ""
+        return (f"❌ {head} {verb} REJECTED · #{sig} {sym}  · pos={pos} "
+                f"ft_status={ft_status}{tail} — position unchanged")
     if action == "force_exit":
         pos = result.get("pos_id", "?")
         ft  = (result.get("ft") or {}).get("status", "?")
@@ -2726,6 +2750,31 @@ def _ingress_log_start(conn: sqlite3.Connection,
         return None
 
 
+def _executor_outcome(result) -> tuple[Optional[int], Optional[str]]:
+    """(status, error) of the Freqtrade call a delivery made, if any (#125).
+
+    `final_status` is the HTTP status returned to the observer, which retries
+    on 5xx, so it stays 200 for a handled Freqtrade rejection. The executor's
+    own status and error are recorded beside it instead.
+    """
+    ft = result.get("ft") if isinstance(result, dict) else None
+    if not isinstance(ft, dict):
+        return None, None
+    status = ft.get("status")
+    if not isinstance(status, int) or isinstance(status, bool):
+        return None, None
+    if 200 <= status < 300:
+        return status, None
+    error = ft.get("body") or ft.get("error") or ""
+    try:
+        parsed = json.loads(error)
+        if isinstance(parsed, dict):
+            error = parsed.get("error") or parsed.get("detail") or error
+    except (TypeError, ValueError):
+        pass
+    return status, str(error)[:500] or None
+
+
 def _ingress_log_finish(conn: sqlite3.Connection, ingress_id: Optional[int],
                         result: dict, status: int) -> None:
     """Stamp the handler outcome onto the ingress row. The LATEST delivery's
@@ -2735,10 +2784,12 @@ def _ingress_log_finish(conn: sqlite3.Connection, ingress_id: Optional[int],
         return
     try:
         action = result.get("action") if isinstance(result, dict) else None
+        executor_status, executor_error = _executor_outcome(result)
         conn.execute(
-            "UPDATE ingress_events SET final_action=?, final_status=?, completed_at=? "
-            "WHERE ingress_id=?",
-            (action, status, datetime.now(timezone.utc).isoformat(), ingress_id),
+            "UPDATE ingress_events SET final_action=?, final_status=?, completed_at=?, "
+            "executor_status=?, executor_error=? WHERE ingress_id=?",
+            (action, status, datetime.now(timezone.utc).isoformat(),
+             executor_status, executor_error, ingress_id),
         )
     except Exception as e:
         logger.warning("ingress_log_finish failed: %s", e)
@@ -2781,10 +2832,12 @@ def _ingress_revision_finish(conn: sqlite3.Connection, revision_id: Optional[int
         return
     try:
         action = result.get("action") if isinstance(result, dict) else None
+        executor_status, executor_error = _executor_outcome(result)
         conn.execute(
-            "UPDATE ingress_revisions SET final_action=?, final_status=?, completed_at=? "
-            "WHERE rev_id=?",
-            (action, status, datetime.now(timezone.utc).isoformat(), revision_id),
+            "UPDATE ingress_revisions SET final_action=?, final_status=?, completed_at=?, "
+            "executor_status=?, executor_error=? WHERE rev_id=?",
+            (action, status, datetime.now(timezone.utc).isoformat(),
+             executor_status, executor_error, revision_id),
         )
     except Exception as e:
         logger.warning("ingress_revision_finish failed: %s", e)
@@ -3201,7 +3254,8 @@ async def _process_event_inner(payload: EventPayload, phase2_locked=False):
             pos_id, signal_id, symbol, direction.upper(), pair, stake, leverage,
             entry_desc, remaining_targets, len(placed_tps), resp["status"], ft_trade_id,
         )
-        return {"action": "force_enter", "pos_id": pos_id, "ft": resp,
+        return {"action": "force_enter" if new_state == "open" else "entry_rejected",
+                "pos_id": pos_id, "ft": resp,
                 "ordertype": entry_ordertype,
                 "limit_price": entry_limit_price,
                 "entry_tag": entry_tag,
@@ -3462,10 +3516,12 @@ async def _process_event_inner(payload: EventPayload, phase2_locked=False):
                 close_pct_of_remaining, pct_remaining_before,
                 new_pct_open, new_state,
             )
-        return {"action": "force_exit",
+        # #125: a refused exit is not an exit. Freqtrade's status and error
+        # are stamped onto the ingress row by handle_event.
+        return {"action": "force_exit" if ft_ok else "exit_rejected",
                 "pos_id": pos["pos_id"],
                 "ft": resp,
-                "pct_closed_of_original": close_pp_of_original,
+                "pct_closed_of_original": close_pp_of_original if ft_ok else 0.0,
                 "pct_open_after": new_pct_open,
                 "kind": kind}
 
