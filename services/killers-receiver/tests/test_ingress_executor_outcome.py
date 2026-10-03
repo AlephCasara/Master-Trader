@@ -176,6 +176,61 @@ def test_rejected_entry_is_recorded_as_entry_rejected():
     assert conn.execute("SELECT state FROM positions").fetchone()["state"] == "failed"
 
 
+def _deliver_tp1_fallback(conn, market_status):
+    """signal_update close_at_target_1: both TP1 limit posts fail, then the
+    receiver falls back to a full market close."""
+    conn.execute("INSERT INTO target_orders (pos_id, idx, price, amount, state) "
+                 "SELECT pos_id, 0, 1.20, 10, 'pending' FROM positions")
+
+    async def get_trade(_cfg, trade_id, session=None):
+        return {"trade_id": 42, "is_short": False, "is_open": True,
+                "amount": 10.0, "current_rate": 1.0, "orders": []}
+
+    async def cancel(_cfg, trade_id, session=None):
+        return {"status": 200, "body": "{}"}
+
+    async def post_limit(_cfg, trade_id, amount, price, session=None):
+        return {"status": 502, "body": '{"error":"limit refused"}'}
+
+    async def market(_cfg, trade_id, pct=None, session=None, **_kw):
+        if market_status == 200:
+            return {"status": 200, "body": '{"result":"Created exit order"}'}
+        return {"status": market_status, "body": '{"error":"market refused"}'}
+
+    async def no_sleep(_s):
+        return None
+
+    payload = _payload("signal_update", 3990, instruction="close_at_target_1")
+    with patch.object(receiver_main, "ft_get_trade", side_effect=get_trade), \
+         patch.object(receiver_main, "ft_cancel_open_order", side_effect=cancel), \
+         patch.object(receiver_main, "ft_force_exit_limit", side_effect=post_limit), \
+         patch.object(receiver_main, "ft_force_exit", side_effect=market), \
+         patch.object(receiver_main.asyncio, "sleep", side_effect=no_sleep):
+        return _run(receiver_main.handle_event(payload))
+
+
+def test_tp1_fallback_records_the_market_close_that_closed_the_position():
+    """Review finding: the result's `ft` was the failed limit post, so the
+    ingress row reported an executor failure for a position that closed."""
+    _cfg, conn = _setup()
+    result = _deliver_tp1_fallback(conn, market_status=200)
+    assert result["action"] == "limit_failed_market_closed"
+    row = _ingress(conn, 3990)
+    assert row["final_action"] == "limit_failed_market_closed"
+    assert row["executor_status"] == 200
+    assert row["executor_error"] is None
+    assert conn.execute("SELECT state FROM positions").fetchone()["state"] == "closed"
+
+
+def test_tp1_fallback_failure_records_the_market_close_error():
+    _cfg, conn = _setup()
+    result = _deliver_tp1_fallback(conn, market_status=500)
+    assert result["action"] == "UNCOVERED_POSITION_ALERT"
+    row = _ingress(conn, 3990)
+    assert row["executor_status"] == 500
+    assert row["executor_error"] == "market refused"
+
+
 def test_rejected_exit_alert_says_rejected_not_closed():
     cfg, _conn = _setup()
     text = receiver_main._format_event_summary(

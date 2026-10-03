@@ -2755,9 +2755,15 @@ def _executor_outcome(result) -> tuple[Optional[int], Optional[str]]:
 
     `final_status` is the HTTP status returned to the observer, which retries
     on 5xx, so it stays 200 for a handled Freqtrade rejection. The executor's
-    own status and error are recorded beside it instead.
+    own status and error are recorded beside it instead. When a delivery made
+    several calls, the terminal one counts: the signal_update TP1 fallback's
+    market close (`market_close_ft`) supersedes the failed limit in `ft`.
     """
-    ft = result.get("ft") if isinstance(result, dict) else None
+    if not isinstance(result, dict):
+        return None, None
+    ft = result.get("market_close_ft")
+    if not isinstance(ft, dict):
+        ft = result.get("ft")
     if not isinstance(ft, dict):
         return None, None
     status = ft.get("status")
@@ -3891,6 +3897,9 @@ async def _process_event_inner(payload: EventPayload, phase2_locked=False):
              pos["pos_id"], msg_id, kind))
         return {"action": final_status,
                 "pos_id": pos["pos_id"], "ft": resp,
+                # #125: when both limit posts failed, the market close is
+                # the call that decided the position's fate.
+                "market_close_ft": mkt_resp,
                 "instruction": instruction, "kind": kind,
                 "tp1": tp1, "mark": mark, "path": "limit_at_tp1",
                 "ft_order_id": new_order_id}
