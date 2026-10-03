@@ -64,3 +64,34 @@ PriceOnly and the 90th percentile of the placebo distribution on profit factor a
 net, in both halves. Anything else is "not demonstrated". At roughly 30 days and a
 handful of trades no outcome authorizes capital: the closed prereg's >= 25 closed
 trades and the Phase-3 bar still apply.
+
+## Results (run 2026-10-03 00:25 UTC, after the pre-declaration was committed)
+
+Inputs and checksums: `results/2026-10-03-input-sha256.txt`; per-variant metrics and the
+reading rule: `results/2026-10-03-backtest-summary.json` (`summarize_backtest.py`). The OI
+archive and Freqtrade export stay on the VPS in `research/oi_trend_causal_2026-10-02/`.
+
+| variant | trades | PF | net USDT | net, +5 bps/fill | win | half 1 (n, net) | half 2 (n, net) |
+|---|---:|---:|---:|---:|---:|---|---|
+| deployed `OITrendPullbackV1` | 0 | - | 0 | - | - | - | - |
+| CausalOI | 13 | 1.24 | +0.27 | +0.14 | 38% | 5, +0.77 | 8, -0.50 |
+| PriceOnly | 18 | 1.88 | +0.94 | +0.77 | 50% | 6, +0.71 | 12, +0.23 |
+| Placebo x20, median | 12 | 1.73 | +0.53 | +0.43 | - | - | - |
+
+- The deployed strategy takes **0 trades** in backtest, confirming the issue.
+- CausalOI ranks at the **30th percentile** of the placebo distribution on both PF and net
+  (65-70th in half 1, 10th in half 2) and beats neither PriceOnly nor the placebo p90 in
+  either half. Reading rule: **discriminative power not demonstrated**.
+- Join check on the actual trades: all 13 CausalOI entries had growth >= 0 from a record
+  15 minutes old at the decision; all 9 PriceOnly trades the gate skipped had negative growth.
+- Over this window the archive had no missing 15m records (the 2026-08-30 note's 28% NaN
+  does not recur), so fail-closed exclusions are only the first three candles per pair.
+
+Stakes are 10 USDT; 13-18 trades over 26 days in one regime carry no inferential weight,
+and nothing here is evidence that the price-only variant has an edge either. The result
+agrees with the withdrawn redo (gate at the 57th percentile of its null).
+
+Limitations: 30 days of history only (Binance serves no more; a longer test needs `fetch`
+run on a schedule, which is not set up here). Backtest entries fill at the next candle open,
+not the live limit-at-bid with a 10-minute unfilled timeout. Slippage is a post-hoc
+sensitivity. The historical OI window sits 10-15 minutes earlier than the live one.

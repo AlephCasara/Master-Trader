@@ -83,6 +83,82 @@ class _Placebo(_BacktestOnly):
         return _date_ms(dataframe["date"]).map(draw).astype(float)
 
 
-for _i in range(1, 21):
-    _name = f"OITrendPullbackV1Placebo{_i:02d}"
-    globals()[_name] = type(_name, (_Placebo,), {"placebo_seed": _i})
+# Spelled out: Freqtrade's resolver does not find classes created with type().
+class OITrendPullbackV1Placebo01(_Placebo):
+    placebo_seed = 1
+
+
+class OITrendPullbackV1Placebo02(_Placebo):
+    placebo_seed = 2
+
+
+class OITrendPullbackV1Placebo03(_Placebo):
+    placebo_seed = 3
+
+
+class OITrendPullbackV1Placebo04(_Placebo):
+    placebo_seed = 4
+
+
+class OITrendPullbackV1Placebo05(_Placebo):
+    placebo_seed = 5
+
+
+class OITrendPullbackV1Placebo06(_Placebo):
+    placebo_seed = 6
+
+
+class OITrendPullbackV1Placebo07(_Placebo):
+    placebo_seed = 7
+
+
+class OITrendPullbackV1Placebo08(_Placebo):
+    placebo_seed = 8
+
+
+class OITrendPullbackV1Placebo09(_Placebo):
+    placebo_seed = 9
+
+
+class OITrendPullbackV1Placebo10(_Placebo):
+    placebo_seed = 10
+
+
+class OITrendPullbackV1Placebo11(_Placebo):
+    placebo_seed = 11
+
+
+class OITrendPullbackV1Placebo12(_Placebo):
+    placebo_seed = 12
+
+
+class OITrendPullbackV1Placebo13(_Placebo):
+    placebo_seed = 13
+
+
+class OITrendPullbackV1Placebo14(_Placebo):
+    placebo_seed = 14
+
+
+class OITrendPullbackV1Placebo15(_Placebo):
+    placebo_seed = 15
+
+
+class OITrendPullbackV1Placebo16(_Placebo):
+    placebo_seed = 16
+
+
+class OITrendPullbackV1Placebo17(_Placebo):
+    placebo_seed = 17
+
+
+class OITrendPullbackV1Placebo18(_Placebo):
+    placebo_seed = 18
+
+
+class OITrendPullbackV1Placebo19(_Placebo):
+    placebo_seed = 19
+
+
+class OITrendPullbackV1Placebo20(_Placebo):
+    placebo_seed = 20

@@ -93,3 +93,35 @@ def test_archive_merge_keeps_first_value_and_accumulates(tmp_path):
     assert oh.merge_archive(path, "ETHUSDT", [(T, 1.0), (T + STEP, 2.0)]) == 2
     assert oh.merge_archive(path, "ETHUSDT", [(T + STEP, 99.0), (T + 2 * STEP, 3.0)]) == 1
     assert oh.read_archive(path)["ETHUSDT"] == [(T, 1.0), (T + STEP, 2.0), (T + 2 * STEP, 3.0)]
+
+
+def _summarizer():
+    s = importlib.util.spec_from_file_location(
+        "oi_summary", Path(__file__).parents[1] / "research/oi_trend_causal/summarize_backtest.py")
+    m = importlib.util.module_from_spec(s)
+    s.loader.exec_module(m)
+    return m
+
+
+def test_backtest_summary_metrics_halves_and_reading_rule():
+    sm = _summarizer()
+
+    def t(day, pnl):
+        return {"open_date": f"2026-09-{day:02d} 05:00:00+00:00", "profit_abs": pnl,
+                "stake_amount": 10.0, "exit_reason": "roi" if pnl > 0 else "stop_loss"}
+    result = {"strategy": {
+        "OITrendPullbackV1CausalOI": {"trades": [t(5, 0.3), t(6, -0.1), t(20, 0.2), t(21, -0.1)]},
+        "OITrendPullbackV1PriceOnly": {"trades": [t(5, 0.1), t(6, -0.2), t(20, 0.1), t(21, -0.2)]},
+        **{f"OITrendPullbackV1Placebo{i:02d}": {"trades": [t(5, 0.05 * i / 20), t(6, -0.2), t(20, -0.1),
+                                                           t(21, 0.01)]}
+           for i in range(1, 21)}}}
+    s = sm.summarize(result)
+    g = s["OITrendPullbackV1CausalOI"]
+    assert g["full"] == {"trades": 4, "net_usdt": 0.3, "profit_factor": 2.5, "win_rate": 0.5}
+    assert g["half1"]["trades"] == 2 and g["half2"]["trades"] == 2
+    assert g["full_slip"]["net_usdt"] == pytest.approx(0.3 - 4 * 2 * 5e-4 * 10)
+    rule = sm.reading_rule(s)
+    assert rule["by_part"]["full"]["net_usdt"]["beats_control_and_p90"]
+    # second half: gate PF 2.0 vs placebo PF 0.1 and control 0.5, net +0.1 > -0.09 and -0.1
+    assert rule["by_part"]["half2"]["profit_factor"]["beats_control_and_p90"]
+    assert rule["discriminative_power"] == "demonstrated"

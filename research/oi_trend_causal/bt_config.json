@@ -69,5 +69,6 @@
     }
   ],
   "dry_run_wallet": 1000,
-  "_comment": "OITrendPullbackV1.live.json minus webhook/api/telegram/db; backtest-only (issue #18). Fees come from --fee on the command line."
+  "_comment": "OITrendPullbackV1.live.json minus webhook/api/telegram/db; backtest-only (issue #18). Fees come from --fee on the command line. timeframe 1h = the strategy's own (required with --strategy-list).",
+  "timeframe": "1h"
 }
