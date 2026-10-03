@@ -14,6 +14,7 @@ Usage:
     python3 download_funding_rates.py --pairs BTC/USDT,ETH/USDT --start 20230101
 """
 import argparse
+import json
 import os
 import time
 from datetime import datetime, timezone
@@ -81,17 +82,59 @@ def fetch_funding_history(symbol: str, start_ms: int, end_ms: int) -> list:
     return all_records
 
 
-# Binance perpetual funding cap is ±0.75% per 8h period. Anything outside
-# this is an API anomaly (NaN, malformed payload, decimal-shift bug) and
-# poisons the rolling mean/std the strategy uses for entries. Reject the
-# whole batch rather than merge a single bad rate.
-FUNDING_RATE_CAP = 0.0075
+# Sanity bound on a single funding rate. It is NOT the exchange cap: Binance
+# sets the cap per symbol and changes it over time. /fapi/v1/fundingInfo on
+# 2026-10-02 listed 804 symbols with caps from ±0.30% (BTC, ETH) to ±3%, and
+# ZEC, HBAR, NEAR, ARB, ENA and TAO in DEFAULT_PAIRS are capped at ±2%. Real
+# settlements beyond the old ±0.75% bound exist in our own feathers (ZEC
+# -1.64% on 2025-04-07, SOL -0.93% on 2023-01-04).
+#
+# A rate beyond ±3% exceeds every cap Binance lists, so it is treated as
+# malformed data (decimal shift, bad payload) and quarantined for that ROW only.
+# The old bound rejected the whole batch, and because --incremental rewinds 24h
+# the rejected row sat in every later window: one value froze the pair's file
+# for good and FundingFadeV1's staleness guard then blocked its entries (#113).
+FUNDING_RATE_SANITY_BOUND = 0.03
+# Rows listed per QUARANTINE log line; the count always covers all of them.
+_QUARANTINE_LOG_ROWS = 5
 
 
-def save_pair(pair: str, records: list):
+def _event_label(date) -> str:
+    return date.strftime("%Y-%m-%dT%H:%MZ") if pd.notna(date) else "?"
+
+
+def _quarantine_bad_rates(pair: str, df_new: pd.DataFrame, raw_rates: pd.Series,
+                          quarantined: list | None = None) -> pd.DataFrame:
+    """Drop rows whose rate is missing, non-numeric, non-finite or beyond the
+    sanity bound, logging each as QUARANTINE. The remaining rows are returned
+    so the rest of the batch still merges and the file keeps advancing.
+    Dropped rows are appended to `quarantined` as (pair, event, raw value)."""
+    ok = df_new["funding_rate"].abs() <= FUNDING_RATE_SANITY_BOUND  # NaN/inf -> False
+    if ok.all():
+        return df_new
+    bad = df_new.loc[~ok]
+    if quarantined is not None:
+        quarantined.extend(
+            (pair, _event_label(d), repr(raw_rates.loc[i])) for i, d in bad["date"].items()
+        )
+    shown = ", ".join(
+        f"{_event_label(d)}={raw_rates.loc[i]!r}"
+        for i, d in bad["date"].head(_QUARANTINE_LOG_ROWS).items()
+    )
+    more = f" (+{len(bad) - _QUARANTINE_LOG_ROWS} more)" if len(bad) > _QUARANTINE_LOG_ROWS else ""
+    log(
+        f"    QUARANTINE {pair}: dropped {len(bad)} of {len(df_new)} row(s) with funding_rate "
+        f"missing, non-numeric or beyond ±{FUNDING_RATE_SANITY_BOUND}: {shown}{more}"
+    )
+    return df_new.loc[ok]
+
+
+def save_pair(pair: str, records: list, quarantined: list | None = None):
     """Merge new records with any existing feather, then atomically replace.
 
-    - Validates funding rate range; rejects the whole batch on out-of-bounds.
+    - Validates each funding rate; a bad row is quarantined (dropped, logged and
+      appended to `quarantined` for the run's alert) and the rest of the batch
+      is still saved, so one value never freezes the file.
     - Merges with existing file so a partial API page doesn't truncate history.
     - On corrupt-feather read, ABORTS the save (does NOT fall back to new-only)
       because that path silently truncates the historical series.
@@ -101,20 +144,15 @@ def save_pair(pair: str, records: list):
         return 0
     df_new = pd.DataFrame(records)
     df_new["fundingTime"] = pd.to_datetime(df_new["fundingTime"], unit="ms", utc=True)
-    df_new["fundingRate"] = df_new["fundingRate"].astype(float)
+    raw_rates = df_new["fundingRate"]
+    # coerce: a malformed value becomes NaN and is quarantined with its row,
+    # instead of raising and dropping the whole batch.
+    df_new["fundingRate"] = pd.to_numeric(raw_rates, errors="coerce").astype(float)
     df_new = df_new.rename(columns={"fundingTime": "date", "fundingRate": "funding_rate"})
     df_new = df_new[["date", "funding_rate"]]
 
-    rates = df_new["funding_rate"]
-    if rates.isna().any():
-        log(f"    REJECT {pair}: batch contains NaN funding_rate (count={int(rates.isna().sum())})")
-        return 0
-    if (rates.abs() > FUNDING_RATE_CAP).any():
-        out_of_range = rates[rates.abs() > FUNDING_RATE_CAP]
-        log(
-            f"    REJECT {pair}: {len(out_of_range)} funding_rate(s) outside ±{FUNDING_RATE_CAP} "
-            f"(min={rates.min():.6f}, max={rates.max():.6f})"
-        )
+    df_new = _quarantine_bad_rates(pair, df_new, raw_rates, quarantined)
+    if df_new.empty:
         return 0
 
     pair_file = pair.replace("/", "_")
@@ -144,6 +182,74 @@ def save_pair(pair: str, records: list):
     return len(df)
 
 
+# Telegram alert for quarantined rows, through trade-webhook's /test/notify
+# (the path killers-/insiders-receiver use). FUNDING_NOTIFY_URL unset = no alert.
+# TRADE_WEBHOOK_NOTIFY_TOKEN is sent as X-Notify-Token only when set (#59).
+#
+# --incremental rewinds 24h, so a quarantined row is re-fetched by every run for
+# a day. Rows already alerted are remembered in this file (pruned after a week)
+# so each bad row alerts once, not hourly; a failed delivery is not recorded, so
+# the next run retries it.
+_ALERTED_FILE = ".quarantine-alerted.json"
+_ALERTED_KEEP_S = 7 * 24 * 3600
+_ALERT_MAX_ROWS = 20
+
+
+def notify_quarantine(quarantined: list) -> None:
+    """Send one best-effort alert for this run's newly quarantined rows. Never raises."""
+    url = os.environ.get("FUNDING_NOTIFY_URL", "").strip()
+    if not quarantined or not url:
+        return
+    state_path = FUNDING_DIR / _ALERTED_FILE
+    try:
+        alerted = json.loads(state_path.read_text())
+        if not isinstance(alerted, dict):
+            alerted = {}
+    except FileNotFoundError:
+        alerted = {}
+    except Exception as e:
+        log(f"    quarantine alert state unreadable ({e}); alerting every row")
+        alerted = {}
+
+    new = [row for row in quarantined if "|".join(row) not in alerted]
+    if not new:
+        return
+    lines = [f"  {pair} {event} = {raw}" for pair, event, raw in new[:_ALERT_MAX_ROWS]]
+    if len(new) > _ALERT_MAX_ROWS:
+        lines.append(f"  (+{len(new) - _ALERT_MAX_ROWS} more, see ft-funding-refresh logs)")
+    text = "\n".join([
+        f"⚠ FUNDING QUARANTINE [ft-funding-refresh] {len(new)} row(s)",
+        f"funding_rate missing, non-numeric or beyond ±{FUNDING_RATE_SANITY_BOUND}; "
+        "dropped, the rest of each file kept updating:",
+        *lines,
+        "  → FundingFadeV1 sees a missing funding event for these pairs",
+    ])
+    token = os.environ.get("TRADE_WEBHOOK_NOTIFY_TOKEN", "").strip()
+    headers = {"X-Notify-Token": token} if token else None
+    try:
+        resp = requests.post(url, json={"text": text}, headers=headers, timeout=10)
+    except Exception as e:
+        log(f"    quarantine alert not sent ({type(e).__name__}); will retry next run")
+        return
+    if not 200 <= resp.status_code < 300:
+        hint = (": TRADE_WEBHOOK_NOTIFY_TOKEN missing or different from trade-webhook's"
+                if resp.status_code == 401 else "")
+        log(f"    quarantine alert rejected (HTTP {resp.status_code}){hint}; will retry next run")
+        return
+    log(f"    quarantine alert sent for {len(new)} row(s)")
+
+    now = time.time()
+    alerted = {k: t for k, t in alerted.items()
+               if isinstance(t, (int, float)) and now - t < _ALERTED_KEEP_S}
+    alerted.update({"|".join(row): now for row in new})
+    tmp = state_path.with_name(f"{state_path.name}.tmp.{os.getpid()}")
+    try:
+        tmp.write_text(json.dumps(alerted))
+        os.replace(tmp, state_path)
+    except Exception as e:
+        log(f"    quarantine alert state not saved ({e}); these rows may alert again")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--pairs", default=",".join(DEFAULT_PAIRS),
@@ -169,6 +275,7 @@ def main():
     log(f"Output: {FUNDING_DIR}")
 
     total_records = 0
+    quarantined = []
     for i, pair in enumerate(pairs, 1):
         symbol = pair_to_symbol(pair)
         pair_file = pair.replace("/", "_")
@@ -188,11 +295,16 @@ def main():
         log(f"  [{i}/{len(pairs)}] {pair} ({symbol}) start_ms={pair_start_ms}...")
         try:
             records = fetch_funding_history(symbol, pair_start_ms, end_ms)
-            n = save_pair(pair, records)
+            n = save_pair(pair, records, quarantined)
             total_records += n
             log(f"    {n} funding periods total after merge")
         except Exception as e:
             log(f"    ERROR: {e}")
+
+    try:
+        notify_quarantine(quarantined)
+    except Exception as e:  # the alert must never fail the refresh
+        log(f"    quarantine alert failed: {e}")
 
     log(f"Done. Total: {total_records} funding records across {len(pairs)} pairs.")
 
