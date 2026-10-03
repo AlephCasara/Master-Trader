@@ -117,6 +117,7 @@ def test_config_ausente_desliga_limiares_com_warning(tmp_path, caplog):
     assert "ausente" in caplog.text
     v = cg.evaluate(c, {"kind": "close_full", "confidence": 0.1})
     assert v.verdict == cg.DISABLED and v.threshold is None and v.confidence == 0.1
+    assert v.reason == "config ausente"
 
 
 @pytest.fixture()
@@ -136,6 +137,17 @@ def test_config_malformada_nao_derruba_o_observer(base_env, monkeypatch, tmp_pat
         c = observer.Config()
     assert c.confidence_gate.enabled is False
     assert "gate DESLIGADO" in caplog.text
+    # na tabela, config rejeitada nao se confunde com config ausente
+    v = cg.evaluate(c.confidence_gate, {"kind": "close_full", "confidence": 0.95})
+    assert v.verdict == cg.DISABLED and v.reason == "config invalida"
+
+
+def test_about_do_json_descreve_o_comportamento_real():
+    """O `_about` dizia que um `mode` invalido faz o observer recusar a subir;
+    o codigo desliga o gate e segue (teste acima)."""
+    about = " ".join(json.loads(cg.DEFAULT_PATH.read_text())["_about"])
+    assert "recusar a subir" not in about
+    assert "DESLIGADO" in about and "config invalida" in about
 
 
 def test_config_versionada_e_valida():
