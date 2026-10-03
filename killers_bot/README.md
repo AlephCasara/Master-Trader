@@ -50,8 +50,10 @@ killers_bot/
 ├── classifier.py             Claude CLI subprocess wrapper (Killers prompt)
 ├── confidence_gate.json      versioned confidence-gate thresholds (#65; SHADOW, provisional)
 ├── confidence_gate.py        loads/validates it; verdict recorded to `confidence_gate`, never blocks
+├── classify_queue.py         retry queue for failed classifications (#95; `classify_queue` table)
+├── tools/requeue_classify.py list / replay queued messages (operator)
 ├── simulator.py              virtual position state machine (audit only)
-├── schema.sql                SQLite: raw_messages, classifications, paper_positions
+├── schema.sql                SQLite: raw_messages, classifications, paper_positions, classify_queue
 ├── generate_session.py       one-shot interactive auth (legacy)
 ├── auth_step1_send_code.py   non-interactive auth step 1 (sends code)
 ├── auth_step2_sign_in.py     non-interactive auth step 2 (signs in with code)
@@ -89,6 +91,37 @@ systemctl --user status killers-observer
 systemctl --user stop   killers-observer
 tail -f /home/ubuntu/killers-bot/observer.log
 ```
+
+### Failed classifications (#95)
+
+A message whose classification fails (Claude CLI timeout, non-zero exit such
+as an expired login, a response without JSON or without `kind`, or any
+exception before the receiver POST) is **not** treated as seen. It stays in
+the feed DB's `classify_queue` table and is retried with backoff (30s, 2m,
+5m, 15m, 30m, 1h; 7 attempts, ~1h52m), oldest first, also after a restart.
+A message the observer was processing when it died is retried on startup.
+
+- **Alert** to the ops Telegram chat (trade-webhook `/test/notify`, the same
+  route the receivers use) on the 2nd failure and when it gives up, naming the
+  `msg_id`, the failure mode and the queue depth; a recovery notice follows if
+  an alerted message later goes through. At most 6 alerts/hour per feed; the
+  rest go to the log only and are counted in the next alert.
+  `KILLERS_NOTIFY_URL` (default `http://127.0.0.1:8088/test/notify`, empty
+  disables) and `TRADE_WEBHOOK_NOTIFY_TOKEN` (sent as `X-Notify-Token` when
+  set) come from `killers_bot/.env`.
+- **At most once at the receiver.** Nothing that reached the receiver POST is
+  re-queued. The only replay window is a crash during the POST itself; the
+  receiver dedupes by `msg_id` (`open_msg_id` UNIQUE, `UNIQUE(pos_id, msg_id,
+  kind)`, edit kind-change refusal). A retried `open` is **not** forwarded if
+  a later message on the same signal (symbol, and signal id when both have
+  one) was already processed; it is alerted for a manual decision.
+- **Give-up / replay.** After the last attempt the row is `exhausted`.
+  List and replay (writes the live DB, operator only):
+  ```
+  python3 killers_bot/tools/requeue_classify.py --db /home/ubuntu/killers-bot/state.sqlite --list
+  python3 killers_bot/tools/requeue_classify.py --db /home/ubuntu/killers-bot/state.sqlite 4101
+  ```
+  The insiders feed uses `/home/ubuntu/insiders-bot/state.sqlite`.
 
 ## Setup history
 
