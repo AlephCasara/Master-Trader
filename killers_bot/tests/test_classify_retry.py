@@ -54,8 +54,9 @@ MOVE_SL = {"kind": "move_sl", "symbol": "POL", "signal_id": 2143,
 def env(monkeypatch):
     conn = sqlite3.connect(":memory:")
     conn.executescript(SCHEMA)
-    st = {"replies": [], "claude": [], "posted": [], "alerts": [],
-          "post_raises": False}
+    # post_results: um item por POST; None = 2xx, str = motivo da falha
+    st = {"replies": [], "claude": [], "posted": [], "bodies": [], "alerts": [],
+          "post_results": []}
 
     async def fake_chain(*a, **k):
         return []
@@ -71,8 +72,9 @@ def env(monkeypatch):
 
     async def fake_post(url, msg, cls, token=""):
         st["posted"].append((msg["id"], cls["kind"]))
-        if st["post_raises"]:
-            raise RuntimeError("receiver hung up")
+        st["bodies"].append(json.loads(json.dumps(
+            {"msg": msg, "classification": cls}, default=str)))
+        return st["post_results"].pop(0) if st["post_results"] else None
 
     async def fake_notify(url, token, text):
         st["alerts"].append(text)
@@ -189,16 +191,194 @@ def test_reinicio_retoma_mensagem_interrompida_no_meio(env, tmp_path):
 
 # ── no maximo uma vez no receiver ──────────────────────────────────────────
 
-def test_excecao_depois_do_post_nao_reagenda(env):
+def test_excecao_depois_do_2xx_nao_reagenda(env, monkeypatch):
     conn, st = env
     st["replies"] = [MOVE_SL]
-    st["post_raises"] = True
+
+    async def boom(*a):
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(observer, "_message_done", boom)
     _live(conn, _Cfg(), 100)
     assert st["posted"] == [(100, "move_sl")]
     state, _, err, _ = _row(conn, 100)
-    assert state == cq.DONE and "after POST" in err
+    assert state == cq.DONE and "after delivery" in err
     assert _retry(conn, _Cfg()) == 0
     assert st["posted"] == [(100, "move_sl")]
+
+
+def _payload(conn, mid):
+    return conn.execute("SELECT payload FROM classify_queue WHERE msg_id = ?",
+                        (mid,)).fetchone()[0]
+
+
+RECV_DOWN = "exhausted 3 fast attempts; last: HTTP 503: upstream down"
+
+
+def test_entrega_sem_2xx_nao_e_done_e_reenvia_o_mesmo_corpo(env):
+    """Revisao do #143: um close valido que o receiver nao confirmou nao pode
+    sumir. Fica na fila com o corpo exato e e reenviado SEM reclassificar."""
+    conn, st = env
+    cfg = _Cfg()
+    st["replies"] = [MOVE_SL]                     # o Claude responde UMA vez
+    st["post_results"] = [RECV_DOWN, None]
+    _live(conn, cfg, 100)
+    state, attempts, err, _ = _row(conn, 100)
+    assert (state, attempts) == (cq.RETRY, 1) and "HTTP 503" in err
+    assert _payload(conn, 100) is not None
+
+    assert _retry(conn, cfg) == 1
+    assert st["claude"] == [100]                  # nao reclassificou
+    assert st["posted"] == [(100, "move_sl"), (100, "move_sl")]
+    assert st["bodies"][0] == st["bodies"][1]     # mesmo corpo, byte a byte
+    assert _row(conn, 100)[0] == cq.DONE and _payload(conn, 100) is None
+    assert _retry(conn, cfg) == 0
+
+
+def test_4xx_deterministico_alerta_e_para_no_teto(env, tmp_path, capsys):
+    from killers_bot.tools import requeue_classify
+    _, st = env
+    db = tmp_path / "state.sqlite"
+    conn = observer.init_db(str(db))
+    cfg = _Cfg()
+    st["replies"] = [MOVE_SL]
+    st["post_results"] = ["HTTP 401: invalid or missing ingress token"] * cq.DEFAULT_MAX_ATTEMPTS
+    _live(conn, cfg, 100)
+    for _ in range(cq.DEFAULT_MAX_ATTEMPTS - 1):
+        assert _retry(conn, cfg) == 1
+    state, attempts, err, _ = _row(conn, 100)
+    assert (state, attempts) == (cq.EXHAUSTED, cq.DEFAULT_MAX_ATTEMPTS)
+    assert "HTTP 401" in err
+    assert _retry(conn, cfg) == 0                 # parou no teto
+    assert len(st["posted"]) == cq.DEFAULT_MAX_ATTEMPTS
+    assert st["claude"] == [100]
+    assert len(st["alerts"]) == 2
+    assert all("delivery FAILED" in a and "HTTP 401" in a for a in st["alerts"])
+    assert "GAVE UP" in st["alerts"][1]
+
+    # visivel na ferramenta, como etapa de entrega
+    assert requeue_classify.main(["--db", str(db), "--list"]) == 0
+    assert "100\texhausted\tdeliver" in capsys.readouterr().out
+    # token corrigido; o operador reenfileira e o MESMO corpo e reenviado
+    assert requeue_classify.main(["--db", str(db), "100"]) == 0
+    assert _retry(conn, cfg) == 1
+    assert st["claude"] == [100]
+    assert st["bodies"][-1] == st["bodies"][0]
+    assert _row(conn, 100)[0] == cq.DONE
+    conn.close()
+
+
+def test_queda_no_meio_do_post_reenvia_o_mesmo_corpo(env, tmp_path):
+    """Resultado desconhecido: o corpo foi gravado e o processo morreu durante o
+    POST. Na subida, reenvia o MESMO corpo; o receiver deduplica por msg_id."""
+    _, st = env
+    db = tmp_path / "state.sqlite"
+    conn = observer.init_db(str(db))
+    cq.begin(conn, 100, fresh=True, commit=False)
+    observer.persist_raw(conn, {"id": 100, "text": "move stop to 0.09 on POL"})
+    body = observer._receiver_body({"id": 100, "text": "move stop to 0.09 on POL"},
+                                   dict(MOVE_SL, id=100))
+    cq.set_payload(conn, 100, body)
+    conn.close()
+
+    conn = observer.init_db(str(db))
+    assert cq.requeue_interrupted(conn) == 1
+    assert _retry(conn, _Cfg(), now=time.time() + 1) == 1
+    assert st["claude"] == []                     # nao reclassificou
+    assert st["bodies"] == [json.loads(body)]
+    assert _row(conn, 100)[0] == cq.DONE
+    conn.close()
+
+
+def test_edicao_descarta_entrega_pendente_e_reclassifica(env):
+    conn, st = env
+    cfg = _Cfg()
+    st["replies"] = [MOVE_SL, dict(MOVE_SL, sl=0.091)]
+    st["post_results"] = [RECV_DOWN, None]
+    _live(conn, cfg, 100)
+    _live(conn, cfg, 100, text="move stop to 0.091 on POL", source="edited")
+    assert st["claude"] == [100, 100]
+    assert st["bodies"][-1]["classification"]["sl"] == 0.091
+    assert _row(conn, 100)[0] == cq.DONE
+    assert _retry(conn, cfg) == 0
+
+
+def test_open_em_reentrega_superado_nao_e_reaberto(env):
+    conn, st = env
+    cfg = _Cfg()
+    open_cls = {"kind": "open", "symbol": "POL", "signal_id": 2143,
+                "direction": "long", "confidence": 0.95}
+    close_cls = {"kind": "close_full", "symbol": "POL", "signal_id": 2143,
+                 "direction": "long", "confidence": 0.95}
+    st["replies"] = [open_cls, close_cls]
+    st["post_results"] = [RECV_DOWN, None]
+    _live(conn, cfg, 100, text="POL long entry ...")
+    _live(conn, cfg, 105, text="close POL")
+    assert _retry(conn, cfg) == 1
+    assert st["posted"] == [(100, "open"), (105, "close_full")]
+    state, _, err, _ = _row(conn, 100)
+    assert state == cq.DONE and "stale open NOT forwarded" in err
+
+
+# ── _post_to_receiver informa o resultado ──────────────────────────────────
+
+def _fake_aiohttp(script, calls):
+    import types
+
+    class _Resp:
+        def __init__(self, status, body):
+            self.status, self._body = status, body
+
+        async def text(self):
+            return self._body
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    class _Session:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def post(self, url, **k):
+            calls.append(k["data"])
+            item = script.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            return _Resp(*item)
+
+    return types.SimpleNamespace(ClientSession=_Session,
+                                 ClientTimeout=lambda **k: None)
+
+
+@pytest.mark.parametrize("script,ok,n_calls,expect", [
+    ([(200, "ok")], True, 1, None),
+    ([(401, "invalid token")], False, 1, "HTTP 401: invalid token"),
+    ([(422, "bad payload")], False, 1, "HTTP 422"),
+    ([(503, "down")] * 3, False, 3, "exhausted 3 fast attempts; last: HTTP 503"),
+    ([ConnectionError("refused"), (200, "ok")], True, 2, None),
+])
+def test_post_to_receiver_devolve_o_resultado(monkeypatch, script, ok, n_calls, expect):
+    calls = []
+    monkeypatch.setitem(sys.modules, "aiohttp", _fake_aiohttp(list(script), calls))
+
+    async def no_sleep(*a, **k):
+        return None
+
+    monkeypatch.setattr(observer.asyncio, "sleep", no_sleep)
+    err = asyncio.run(observer._post_to_receiver(
+        "http://receiver.invalid/event", {"id": 1}, {"kind": "close_full"}))
+    assert (err is None) is ok and len(calls) == n_calls
+    if expect:
+        assert err.startswith(expect)
 
 
 def test_excecao_antes_do_post_reagenda(env, monkeypatch):

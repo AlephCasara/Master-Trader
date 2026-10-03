@@ -419,12 +419,12 @@ async def _classify_and_forward(client, channel_id, conn, config, msg_dict: dict
     """Classifica, grava, simula e encaminha uma mensagem ja persistida.
 
     Chamado por `process_message` (entrega do Telegram) e por `retry_due`
-    (fila #95). Toda saida fecha a linha da fila: `done` quando o pipeline
-    terminou, `retry`/`exhausted` quando a mensagem NAO chegou ao receiver.
-    Uma excecao depois do POST nunca reagenda: o receiver ja pode ter agido.
+    (fila #95). Toda saida fecha a linha da fila: `done` so depois de 2xx do
+    receiver (ou sem receiver configurado), `retry`/`exhausted` caso
+    contrario. Uma excecao depois do 2xx nunca reagenda.
     """
     msg_id = msg_dict["id"]
-    reached_receiver = False
+    delivered = False
     try:
         chain = await build_reply_chain(client, channel_id, conn, msg_dict)
 
@@ -467,7 +467,7 @@ async def _classify_and_forward(client, channel_id, conn, config, msg_dict: dict
                 on_failure=failures.append,
             )
         if classification is None:
-            await _classification_failed(
+            await _processing_failed(
                 conn, config, msg_dict,
                 failures[0] if failures else "classifier returned no result")
             return
@@ -522,25 +522,30 @@ async def _classify_and_forward(client, channel_id, conn, config, msg_dict: dict
         # Receiver is the source of truth for actual trades; paper sim stays
         # for audit + offline comparison.
         if config.receiver_url:
-            # Marcado ANTES do await: daqui em diante o receiver pode ter
-            # agido, entao nenhuma falha posterior reagenda a mensagem.
-            reached_receiver = True
-            await _post_to_receiver(config.receiver_url, msg_dict, classification,
-                                    getattr(config, "receiver_token", ""))
-
+            # #95: o corpo exato vai para a fila ANTES do POST. Se a entrega
+            # falhar (ou o processo cair no meio dela), a nova tentativa
+            # reenvia este corpo, sem reclassificar.
+            classify_queue.set_payload(conn, msg_id, _receiver_body(msg_dict, classification))
+            err = await _post_to_receiver(config.receiver_url, msg_dict, classification,
+                                          getattr(config, "receiver_token", ""))
+            if err is not None:
+                await _processing_failed(conn, config, msg_dict,
+                                         f"receiver delivery failed: {err}", DELIVERY)
+                return
+        delivered = True
         await _message_done(conn, config, msg_dict, classification)
     except Exception as e:
-        if reached_receiver:
-            logger.exception("[PIPELINE] id=%s falhou DEPOIS do POST ao receiver "
+        if delivered:
+            logger.exception("[PIPELINE] id=%s falhou DEPOIS do 2xx do receiver "
                              "— fechada, NAO sera reenviada", msg_id)
             classify_queue.mark_done(
                 conn, msg_id,
-                note=f"exception after POST: {type(e).__name__}: {e}"[:500])
+                note=f"exception after delivery: {type(e).__name__}: {e}"[:500])
             return
-        logger.exception("[PIPELINE] id=%s falhou antes do receiver — volta "
+        logger.exception("[PIPELINE] id=%s falhou antes da entrega — volta "
                          "para a fila", msg_id)
-        await _classification_failed(conn, config, msg_dict,
-                                     f"exception: {type(e).__name__}: {e}")
+        await _processing_failed(conn, config, msg_dict,
+                                 f"exception: {type(e).__name__}: {e}")
         return
 
     # Shadow Claude after the fast-path decision is already in flight. Logs
@@ -644,9 +649,22 @@ def _queue_summary(conn) -> str:
             f"{c.get(classify_queue.EXHAUSTED, 0)} given up")
 
 
-async def _classification_failed(conn, config, msg_dict: dict, reason: str) -> None:
-    """A mensagem NAO chegou ao receiver: reagenda com backoff ou desiste, e
-    alerta na `alert_after`-esima falha e ao desistir."""
+CLASSIFICATION = "classification"
+DELIVERY = "delivery"
+
+
+def _receiver_body(msg: dict, classification: dict) -> str:
+    """Corpo do POST /event. Mesmo formato que `_post_to_receiver` envia."""
+    return json.dumps({"msg": msg, "classification": classification}, default=str)
+
+
+async def _processing_failed(conn, config, msg_dict: dict, reason: str,
+                             stage: str = CLASSIFICATION) -> None:
+    """O receiver NAO confirmou a mensagem (classificacao falhou, ou a entrega
+    nao recebeu 2xx): reagenda com backoff ou desiste, e alerta na
+    `alert_after`-esima falha e ao desistir. Um 4xx deterministico (401, 422)
+    segue o mesmo teto: alerta, tenta de novo (o operador pode corrigir o
+    token nesse meio tempo) e para em `exhausted`."""
     msg_id = msg_dict["id"]
     max_attempts = int(getattr(config, "classify_max_attempts",
                                classify_queue.DEFAULT_MAX_ATTEMPTS))
@@ -654,20 +672,21 @@ async def _classification_failed(conn, config, msg_dict: dict, reason: str) -> N
                               classify_queue.DEFAULT_ALERT_AFTER))
     f = classify_queue.record_failure(conn, msg_id, reason, max_attempts=max_attempts)
     label = _label(config)
+    tag = "[DELIVERY FAIL]" if stage == DELIVERY else "[CLASSIFY FAIL]"
     if f.state == classify_queue.EXHAUSTED:
         replay = ("python3 killers_bot/tools/requeue_classify.py --db "
                   f"{getattr(config, 'db_path', None) or '<db>'} {msg_id}")
-        logger.error("[CLASSIFY FAIL] id=%d attempt %d/%d: %s — GAVE UP, nothing "
-                     "forwarded. Replay: %s", msg_id, f.attempts, max_attempts,
+        logger.error("%s id=%d attempt %d/%d: %s — GAVE UP, receiver never "
+                     "confirmed. Replay: %s", tag, msg_id, f.attempts, max_attempts,
                      reason, replay)
-        what = f"GAVE UP — nothing was forwarded. Replay: `{replay}`"
+        what = f"GAVE UP — the receiver never confirmed it. Replay: `{replay}`"
     else:
         wait = max(int(f.next_retry_at - time.time()), 0)
-        logger.warning("[CLASSIFY FAIL] id=%d attempt %d/%d: %s — retry in %ds",
+        logger.warning("%s id=%d attempt %d/%d: %s — retry in %ds", tag,
                        msg_id, f.attempts, max_attempts, reason, wait)
         what = f"next retry in {wait}s"
     if f.state == classify_queue.EXHAUSTED or f.attempts == alert_after:
-        text = (f"⚠️ [{label}-observer] classification FAILED · msg_id={msg_id} · "
+        text = (f"⚠️ [{label}-observer] {stage} FAILED · msg_id={msg_id} · "
                 f"attempt {f.attempts}/{max_attempts}\n"
                 f"reason: {reason[:200]}\n{what}\n{_queue_summary(conn)}\n"
                 f"text: «{_snippet(msg_dict)}»")
@@ -682,8 +701,8 @@ async def _message_done(conn, config, msg_dict: dict, classification: dict) -> N
         after = f" after {attempts} failed attempt(s)" if attempts else ""
         await _alert(config,
                      f"✅ [{_label(config)}-observer] msg_id={msg_dict['id']} "
-                     f"classified as {classification.get('kind')}{after} — "
-                     f"processed, nothing to replay. {_queue_summary(conn)}")
+                     f"({classification.get('kind')}) confirmed by the receiver{after} — "
+                     f"nothing to replay. {_queue_summary(conn)}")
 
 
 def _norm_symbol(sym) -> str:
@@ -741,6 +760,41 @@ def _load_raw(conn, msg_id: int) -> Optional[dict]:
     return d
 
 
+async def _redeliver(conn, config, msg_id: int, payload: str) -> None:
+    """Nova tentativa de ENTREGA de uma mensagem ja classificada. O receiver
+    deduplica por msg_id (`open_msg_id` UNIQUE; claim UNIQUE(pos_id, msg_id,
+    kind) antes de qualquer await em close/signal_update; move_sl nao afrouxa),
+    entao reenviar depois de um resultado desconhecido age no maximo uma vez."""
+    try:
+        body = json.loads(payload)
+        msg, cls = body["msg"], body["classification"]
+        if not isinstance(msg, dict) or not isinstance(cls, dict):
+            raise ValueError("msg/classification must be objects")
+    except (TypeError, ValueError, KeyError) as e:
+        classify_queue.give_up(conn, msg_id, f"stored payload unreadable: {e}")
+        logger.error("[RETRY DELIVERY] id=%d payload ilegivel — desistiu: %s", msg_id, e)
+        await _alert(config, f"⚠️ [{_label(config)}-observer] msg_id={msg_id} "
+                             "could not be redelivered: stored payload unreadable")
+        return
+    msg["id"] = msg_id
+    if cls.get("kind") == "open":
+        later = _later_message_for_signal(conn, msg_id, cls)
+        if later is not None:
+            await _stale_open_not_forwarded(conn, config, msg, cls, later)
+            return
+    if not config.receiver_url:
+        classify_queue.mark_done(conn, msg_id, note="receiver disabled; not delivered")
+        return
+    logger.info("[RETRY DELIVERY] id=%d kind=%s", msg_id, cls.get("kind"))
+    err = await _post_to_receiver(config.receiver_url, msg, cls,
+                                  getattr(config, "receiver_token", ""))
+    if err is not None:
+        await _processing_failed(conn, config, msg,
+                                 f"receiver delivery failed: {err}", DELIVERY)
+        return
+    await _message_done(conn, config, msg, cls)
+
+
 async def retry_due(client, channel_id, conn, config,
                     now: Optional[float] = None) -> int:
     """Uma passada da fila: reprocessa as mensagens com tentativa vencida,
@@ -752,6 +806,14 @@ async def retry_due(client, channel_id, conn, config,
             # Uma entrega ao vivo pode ter resolvido ou reagendado esta
             # mensagem enquanto esperavamos a vez.
             if not classify_queue.is_due(conn, msg_id, now):
+                continue
+            payload = classify_queue.get_payload(conn, msg_id)
+            if payload is not None:
+                # Ja classificada; falta o 2xx do receiver. Reenvia o MESMO
+                # corpo, sem reclassificar.
+                classify_queue.begin(conn, msg_id, fresh=False)
+                await _redeliver(conn, config, msg_id, payload)
+                processed += 1
                 continue
             msg_dict = _load_raw(conn, msg_id)
             if msg_dict is None:
@@ -848,13 +910,18 @@ async def _shadow_classify(msg_dict: dict, chain: list, fast_path: dict,
 
 
 async def _post_to_receiver(url: str, msg: dict, classification: dict,
-                            token: str = "") -> None:
+                            token: str = "") -> Optional[str]:
     """POST classified event to killers-receiver with bounded retry.
+
+    Returns None ONLY when the receiver answered 2xx; otherwise a one-line
+    failure reason. The caller (#95) keeps the message queued until a 2xx:
+    the stored body is re-sent later with backoff, up to the queue's attempt
+    cap, and the receiver dedupes by msg_id. Never raises.
 
     `token` is the receiver's required ingress bearer. An empty token still
     posts — the receiver answers 401, which the 4xx branch below logs at ERROR
-    and does NOT retry. That is the intended shape: a misconfigured token is a
-    loud, immediate, non-trading failure rather than a silent retry storm.
+    and does NOT retry here. A misconfigured token is a loud, non-trading
+    failure: the queue alerts and stops at its cap instead of a retry storm.
 
     Bug discovered 2026-05-27 19:38: receiver crashed 500 on a real signal,
     observer logged and moved on, msg lost silently. Retry policy:
@@ -878,7 +945,7 @@ async def _post_to_receiver(url: str, msg: dict, classification: dict,
     except Exception as e:
         logger.error("[RECV] payload serialize failed msg_id=%s: %s",
                      msg.get("id"), e)
-        return
+        return f"payload serialize failed: {e}"
 
     headers = {"Content-Type": "application/json"}
     if token:
@@ -905,16 +972,17 @@ async def _post_to_receiver(url: str, msg: dict, classification: dict,
                                     r.status, msg.get("id"),
                                     classification.get("kind"),
                                     body[:200], attempt)
-                        return
+                        return None
                     if 400 <= r.status < 500 and r.status != 429:
-                        # Client error — payload broken, retrying won't help
+                        # Client error — no fast retry here; the queue
+                        # retries with backoff up to its cap and alerts.
                         logger.error(
                             "[RECV] %d msg_id=%s kind=%s body=%s — "
-                            "4xx, NOT retrying",
+                            "4xx, no fast retry",
                             r.status, msg.get("id"),
                             classification.get("kind"), body[:200],
                         )
-                        return
+                        return f"HTTP {r.status}: {body[:200]}"
                     # 5xx or 429 — retry
                     last_err = f"HTTP {r.status}: {body[:200]}"
                     logger.warning(
@@ -929,12 +997,13 @@ async def _post_to_receiver(url: str, msg: dict, classification: dict,
                 msg.get("id"), attempt, len(backoffs), e,
             )
 
-    # Exhausted retries
+    # Exhausted fast retries — the caller re-queues the message.
     logger.error(
-        "[RECV] EXHAUSTED %d retries for msg_id=%s kind=%s — message LOST. "
-        "Last error: %s",
+        "[RECV] EXHAUSTED %d fast retries for msg_id=%s kind=%s — back to the "
+        "queue. Last error: %s",
         len(backoffs), msg.get("id"), classification.get("kind"), last_err,
     )
+    return f"exhausted {len(backoffs)} fast attempts; last: {last_err}"
 
 
 # ── Main loop ──────────────────────────────────────────────────────────────

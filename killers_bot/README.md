@@ -94,12 +94,23 @@ tail -f /home/ubuntu/killers-bot/observer.log
 
 ### Failed classifications (#95)
 
-A message whose classification fails (Claude CLI timeout, non-zero exit such
-as an expired login, a response without JSON or without `kind`, or any
-exception before the receiver POST) is **not** treated as seen. It stays in
-the feed DB's `classify_queue` table and is retried with backoff (30s, 2m,
+A message is **done only when the receiver answers 2xx**. Until then it stays
+in the feed DB's `classify_queue` table and is retried with backoff (30s, 2m,
 5m, 15m, 30m, 1h; 7 attempts, ~1h52m), oldest first, also after a restart.
-A message the observer was processing when it died is retried on startup.
+Two stages can fail:
+
+- **Classification** (Claude CLI timeout, non-zero exit such as an expired
+  login, a response without JSON or without `kind`, or any exception before
+  the POST): the retry classifies again.
+- **Delivery** (receiver 4xx, 5xx/transport after the 3 fast attempts): the
+  exact POST body was stored in `classify_queue.payload` *before* sending, and
+  the retry re-sends that body **without re-classifying**. A deterministic 4xx
+  (401, 422) follows the same cap: it alerts, keeps retrying (a fixed token
+  goes through) and stops at `exhausted`.
+
+A message the observer was processing when it died is retried on startup:
+re-sent from the stored body if the crash came during the POST (outcome
+unknown; the receiver dedupes by `msg_id`), classified again otherwise.
 
 - **Alert** to the ops Telegram chat (trade-webhook `/test/notify`, the same
   route the receivers use) on the 2nd failure and when it gives up, naming the
@@ -109,14 +120,19 @@ A message the observer was processing when it died is retried on startup.
   `KILLERS_NOTIFY_URL` (default `http://127.0.0.1:8088/test/notify`, empty
   disables) and `TRADE_WEBHOOK_NOTIFY_TOKEN` (sent as `X-Notify-Token` when
   set) come from `killers_bot/.env`.
-- **At most once at the receiver.** Nothing that reached the receiver POST is
-  re-queued. The only replay window is a crash during the POST itself; the
-  receiver dedupes by `msg_id` (`open_msg_id` UNIQUE, `UNIQUE(pos_id, msg_id,
-  kind)`, edit kind-change refusal). A retried `open` is **not** forwarded if
-  a later message on the same signal (symbol, and signal id when both have
-  one) was already processed; it is alerted for a manual decision.
+- **Acts at most once at the receiver.** A re-sent body may reach a receiver
+  that already acted on the first attempt (5xx after side effects, timeout,
+  crash mid-POST). The receiver dedupes by `msg_id`: the open inserts its
+  position row (`open_msg_id` UNIQUE) before calling Freqtrade, close and
+  `signal_update` claim `UNIQUE(pos_id, msg_id, kind)` before any await, an
+  edited kind change is refused, and `move_sl` never loosens. A retried `open`
+  is **not** forwarded if a later message on the same signal (symbol, and
+  signal id when both have one) was already processed; it is alerted for a
+  manual decision.
 - **Give-up / replay.** After the last attempt the row is `exhausted`.
-  List and replay (writes the live DB, operator only):
+  `--list` shows the stage (`classify` / `deliver`). Requeue re-sends a stored
+  body; `--reclassify` drops it and classifies again (writes the live DB,
+  operator only):
   ```
   python3 killers_bot/tools/requeue_classify.py --db /home/ubuntu/killers-bot/state.sqlite --list
   python3 killers_bot/tools/requeue_classify.py --db /home/ubuntu/killers-bot/state.sqlite 4101

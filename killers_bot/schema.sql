@@ -177,7 +177,10 @@ CREATE TABLE IF NOT EXISTS classify_queue (
     updated_at    TEXT NOT NULL,
     next_retry_at REAL,                       -- epoch s; so em state = retry
     last_error    TEXT,                       -- modo da ultima falha
-    alerted       INTEGER NOT NULL DEFAULT 0  -- 1 = um alerta de falha foi entregue
+    alerted       INTEGER NOT NULL DEFAULT 0, -- 1 = um alerta de falha foi entregue
+    payload       TEXT                        -- corpo exato do POST ao receiver, gravado
+                                              -- ANTES do envio; presente = a nova tentativa
+                                              -- reenvia sem reclassificar
 );
 
 CREATE INDEX IF NOT EXISTS idx_classify_queue_due ON classify_queue(state, next_retry_at);
