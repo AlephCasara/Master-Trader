@@ -322,3 +322,243 @@ def test_exporter_loop_pushes_gateway_outage_between_signals(exporter, monkeypat
     with pytest.raises(KeyboardInterrupt):
         exporter.main()
     assert [(m[0], m[1]) for m in webhook.messages()] == [("warning", "fleet-hl-gateway")]
+
+
+# ── #104: a live bot on an account the exporter cannot value ─────────────
+FUNDING = {"service": "fundingfadev1", "strategy": "FundingFadeV1",
+           "capital_account": "binance-spot", "capital_owner": True}
+KELTNER = {"service": "keltnerbouncev1", "strategy": "KeltnerBounceV1",
+           "capital_account": "binance-spot"}
+KILLERS = {"service": "ft-killers-scalp", "strategy": "KillersScalpV1",
+           "capital_account": "hyperliquid-killers", "capital_owner": True}
+LEDGER_TOTAL = sum(row["amount"] for row in json.loads(
+    (FT_DIR / "account_transfers.json").read_text())["transfers"])
+
+
+def _registry_bot(exporter, strategy):
+    return next(dict(bot) for bot in exporter.BOTS if bot["strategy"] == strategy)
+
+
+def _venues(exporter, monkeypatch, killers_ok=True):
+    """Binance wallet 300 + Hyperliquid Killers account 100, HTTP mocked."""
+    requested = []
+
+    class Response:
+        def __init__(self, body):
+            self.body = body
+
+        def raise_for_status(self):
+            if self.body is None:
+                raise exporter.requests.HTTPError("503")
+
+        def json(self):
+            return self.body
+
+    def get(url, **kwargs):
+        requested.append(url)
+        now = exporter.time.time()
+        if url.endswith("/healthz"):
+            return Response({"status": "ok", "faults": 0, "observed_at": now})
+        if url.endswith("/account/killers"):
+            return Response({"equity": 100.0, "free": 80.0, "margin": 20.0,
+                             "notional": 40.0, "observed_at": now} if killers_ok else None)
+        raise AssertionError(f"unexpected valuation request {url}")
+
+    def fetch(service, endpoint):
+        assert (service, endpoint) == ("fundingfadev1", "balance")
+        return {"total": 300.0, "stake": "USDC", "currencies": [{"currency": "USDC", "free": 250.0}]}
+
+    monkeypatch.setattr(exporter.requests, "get", get)
+    monkeypatch.setattr(exporter, "fetch_json", fetch)
+    return requested
+
+
+def test_todays_valued_accounts_observe_exactly_as_before(exporter, monkeypatch):
+    exporter._membership_complete = True
+    exporter._live_bots = [FUNDING, KELTNER, KILLERS]
+    _venues(exporter, monkeypatch)
+    result = exporter.observe_accounts()
+    assert result["complete"] is True
+    assert result["equity"] == 400.0
+    assert result["breaker_complete"] is True
+    assert result["breaker_equity"] == result["equity"]
+    assert result["net_transfers"] == pytest.approx(LEDGER_TOTAL)
+    assert result["errors"] == []
+    assert "unvalued_accounts" not in result
+
+
+def test_live_bot_on_unvalued_account_leaves_breaker_running_on_the_rest(exporter, monkeypatch):
+    """Issue #104 repro: FundingFade + Killers live, plus Insiders promoted."""
+    insiders = _registry_bot(exporter, "InsidersScalpV1")
+    assert insiders["capital_account"] == "ft-insiders-scalp", "registry default the issue describes"
+    exporter._membership_complete = True
+    exporter._live_bots = [FUNDING, KELTNER, KILLERS, insiders]
+    requested = _venues(exporter, monkeypatch)
+    result = exporter.observe_accounts()
+
+    assert result["breaker_complete"] is True, "one unvalued account must not freeze the breaker"
+    assert result["breaker_equity"] == 400.0
+    assert result["net_transfers"] == pytest.approx(LEDGER_TOTAL)
+    # The whole-portfolio total is still not claimed: the Insiders wallet is unobserved.
+    assert result["complete"] is False
+    assert result["equity"] is None
+    assert result["unvalued_accounts"] == {"ft-insiders-scalp": ["InsidersScalpV1"]}
+    assert any("ft-insiders-scalp (InsidersScalpV1)" in e and "excluded from the circuit breaker" in e
+               for e in result["errors"])
+    assert not any("Account equity unavailable" in e for e in result["errors"]), \
+        "a configuration error is not reported as a transient fetch failure"
+    assert set(requested) == {exporter.GATEWAY_URL + "/healthz", exporter.GATEWAY_URL + "/account/killers"}
+
+
+def test_transient_failure_on_a_valued_account_still_freezes_the_breaker(exporter, monkeypatch):
+    exporter._membership_complete = True
+    exporter._live_bots = [FUNDING, KILLERS, _registry_bot(exporter, "InsidersScalpV1")]
+    _venues(exporter, monkeypatch, killers_ok=False)
+    result = exporter.observe_accounts()
+    assert result["breaker_complete"] is False, "a partial total would fake a drawdown"
+    assert result["breaker_equity"] is None
+    assert "Account equity unavailable: hyperliquid-killers" in result["errors"]
+
+
+def test_only_unvalued_accounts_live_never_values_the_breaker_at_zero(exporter, monkeypatch):
+    exporter._membership_complete = True
+    exporter._live_bots = [_registry_bot(exporter, "ShortKeltnerV2HL")]
+    _venues(exporter, monkeypatch)
+    result = exporter.observe_accounts()
+    assert result["breaker_complete"] is False
+    assert result["breaker_equity"] is None
+    assert result["unvalued_accounts"] == {"ft-short-keltner-hl-live": ["ShortKeltnerV2HL"]}
+
+
+def test_capital_refresh_reports_unvalued_live_account_as_configuration_error(exporter, monkeypatch, caplog):
+    exporter.BOTS = [FUNDING, _registry_bot(exporter, "InsidersScalpV1")]
+    monkeypatch.setattr(exporter, "fetch_json", lambda service, endpoint:
+                        {"dry_run": False} if endpoint == "show_config" else {"starting_capital": 50.0})
+    with caplog.at_level("ERROR", logger="ft-exporter"):
+        exporter.refresh_live_capital()
+    errors = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
+    assert len(errors) == 1
+    assert "CONFIGURATION ERROR" in errors[0] and "InsidersScalpV1" in errors[0]
+    assert "ft-insiders-scalp" in errors[0]
+
+
+def test_drawdown_on_health_file_follows_the_breaker_scope(exporter, monkeypatch, tmp_path):
+    monkeypatch.setattr(exporter, "ACCOUNT_STATE_FILE", tmp_path / "account_health.json")
+    exporter._portfolio_peak = 500.0
+    exporter.save_account_health({"complete": False, "equity": None, "breaker_complete": True,
+                                  "breaker_equity": 400.0, "accounts": {}, "errors": []})
+    saved = json.loads((tmp_path / "account_health.json").read_text())
+    assert saved["drawdown_pct"] == pytest.approx(20.0)
+    exporter.save_account_health({"complete": False, "equity": None, "breaker_complete": False,
+                                  "breaker_equity": None, "accounts": {}, "errors": []})
+    assert "drawdown_pct" not in json.loads((tmp_path / "account_health.json").read_text())
+
+
+def _run_cycles(exporter, monkeypatch, tmp_path, cycles, peak_state):
+    class Clock:
+        now = 1_800_000_000.0
+        count = 0
+
+        def time(self):
+            return self.now
+
+        def sleep(self, seconds):
+            self.now += seconds
+            self.count += 1
+            if self.count >= cycles:
+                raise KeyboardInterrupt
+
+    monkeypatch.setattr(exporter, "time", Clock())
+    (tmp_path / "portfolio_peak.json").write_text(json.dumps(peak_state))
+    monkeypatch.setattr(exporter, "PEAK_STATE_FILE", tmp_path / "portfolio_peak.json")
+    monkeypatch.setattr(exporter, "ACCOUNT_STATE_FILE", tmp_path / "account_health.json")
+    monkeypatch.setattr(exporter, "refresh_live_capital", lambda: None)
+    monkeypatch.setattr(exporter, "scrape_all", lambda: (0.0, 0.0))
+    with pytest.raises(KeyboardInterrupt):
+        exporter.main()
+
+
+def test_breach_on_valued_accounts_halts_entries_with_an_unvalued_bot_live(exporter, monkeypatch, tmp_path):
+    """End to end through main(): before #104 the breaker never ran here."""
+    insiders = _registry_bot(exporter, "InsidersScalpV1")
+    exporter._membership_complete = True
+    exporter._live_bots = [FUNDING, KELTNER, KILLERS, insiders]
+    exporter._live_initial_capital = 400.0
+    _venues(exporter, monkeypatch)
+    stopped, alerts = [], []
+    monkeypatch.setattr(exporter, "stop_bot", lambda bot: stopped.append(bot["strategy"]) or True)
+    monkeypatch.setattr(exporter, "send_circuit_breaker_alert", lambda *a: alerts.append(a))
+    webhook = _Webhook()
+    monkeypatch.setattr(exporter.requests, "post", webhook)
+    # $500 peak on the two valued accounts, now worth $400: a 20% drawdown.
+    _run_cycles(exporter, monkeypatch, tmp_path, 1, {
+        "peak": 500.0, "equity_basis": "accounts-v1", "account_transfer_total": LEDGER_TOTAL})
+
+    assert alerts and alerts[0][0] == 400.0 and alerts[0][1] == pytest.approx(20.0)
+    assert stopped == ["FundingFadeV1", "KeltnerBounceV1", "KillersScalpV1", "InsidersScalpV1"], \
+        "the halt still covers every live bot, including the unvalued one"
+    assert ("warning", "fleet-breaker-coverage") in [(m[0], m[1]) for m in webhook.messages()]
+    health = json.loads((tmp_path / "account_health.json").read_text())
+    assert health["drawdown_pct"] == pytest.approx(20.0)
+
+
+def test_valued_accounts_within_threshold_do_not_halt(exporter, monkeypatch, tmp_path):
+    exporter._membership_complete = True
+    exporter._live_bots = [FUNDING, KELTNER, KILLERS, _registry_bot(exporter, "InsidersScalpV1")]
+    _venues(exporter, monkeypatch)
+    stopped = []
+    monkeypatch.setattr(exporter, "stop_bot", lambda bot: stopped.append(bot) or True)
+    monkeypatch.setattr(exporter.requests, "post", _Webhook())
+    _run_cycles(exporter, monkeypatch, tmp_path, 1, {
+        "peak": 410.0, "equity_basis": "accounts-v1", "account_transfer_total": LEDGER_TOTAL})
+    assert stopped == []
+    assert exporter._portfolio_peak == 410.0, "the excluded wallet never enters the peak"
+
+
+def test_unvalued_account_pages_once_and_reports_when_cleared(exporter, monkeypatch):
+    webhook = _Webhook()
+    monkeypatch.setattr(exporter.requests, "post", webhook)
+    exporter._membership_complete = True
+    exporter._live_bots = [FUNDING]
+    observation = {"unvalued_accounts": {"ft-insiders-scalp": ["InsidersScalpV1"]}, "errors": []}
+    exporter.watch_breaker(observation, True, 0)
+    exporter.watch_breaker(observation, True, 60)
+    assert len(webhook.posts) == 1, "page on the first cycle, not every cycle"
+    kind, bot, message = webhook.messages()[0]
+    assert (kind, bot) == ("warning", "fleet-breaker-coverage")
+    assert "ft-insiders-scalp (InsidersScalpV1)" in message
+    assert len("WARN " + message) <= 200
+    exporter.watch_breaker({"errors": []}, True, 120)
+    assert webhook.messages()[1][:2] == ("status", "fleet-breaker-coverage")
+
+
+def test_breaker_not_evaluating_pages_after_sustained_window(exporter, monkeypatch):
+    webhook = _Webhook()
+    monkeypatch.setattr(exporter.requests, "post", webhook)
+    exporter._membership_complete = True
+    exporter._live_bots = [KILLERS]
+    stuck = {"errors": ["Account equity unavailable: hyperliquid-killers"]}
+    for t in range(0, 900, 60):
+        exporter.watch_breaker(stuck, False, t)
+    assert webhook.posts == []
+    exporter.watch_breaker(stuck, False, 900)
+    kind, bot, message = webhook.messages()[0]
+    assert (kind, bot) == ("warning", "fleet-breaker-watch")
+    assert message.startswith("Circuit breaker not evaluated for 15 min")
+    assert "hyperliquid-killers" in message
+    exporter.watch_breaker({"errors": []}, True, 960)
+    assert webhook.messages()[1] == ("status", "fleet-breaker-watch", "Recovered after 16 min.")
+
+
+def test_breaker_watch_covers_unknown_membership_but_not_an_all_dry_fleet(exporter, monkeypatch):
+    webhook = _Webhook()
+    monkeypatch.setattr(exporter.requests, "post", webhook)
+    exporter._live_bots = []
+    exporter._membership_complete = True
+    for t in range(0, 1200, 60):
+        exporter.watch_breaker({"errors": []}, False, t)
+    assert webhook.posts == [], "no live bot: nothing to protect"
+    exporter._membership_complete = False
+    for t in range(1200, 2200, 60):
+        exporter.watch_breaker({"errors": ["Live account membership is not fully observed"]}, False, t)
+    assert [m[1] for m in webhook.messages()] == ["fleet-breaker-watch"]
