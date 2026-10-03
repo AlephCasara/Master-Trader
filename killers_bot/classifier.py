@@ -10,7 +10,7 @@ import asyncio
 import json
 import logging
 import re
-from typing import Optional
+from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -203,6 +203,22 @@ def build_prompt(msg: dict, reply_chain: list[dict],
     )
 
 
+def _cli_error_detail(stderr: bytes, stdout: bytes) -> str:
+    """Short reason for a non-zero CLI exit. The CLI often leaves stderr empty
+    and reports the error (e.g. an expired login) in the JSON envelope."""
+    err = stderr.decode(errors="replace").strip()
+    if err:
+        return err[:200]
+    out = stdout.decode(errors="replace").strip()
+    try:
+        env = json.loads(out)
+        if isinstance(env, dict) and isinstance(env.get("result"), str):
+            return env["result"][:200]
+    except json.JSONDecodeError:
+        pass
+    return out[:200] or "no output"
+
+
 async def classify(
     msg: dict,
     reply_chain: list[dict],
@@ -211,6 +227,7 @@ async def classify(
     model: Optional[str] = None,
     timeout_sec: float = 10.0,
     template: str = PROMPT_TEMPLATE,
+    on_failure: Optional[Callable[[str], None]] = None,
 ) -> Optional[dict]:
     """Spawn `claude -p PROMPT --output-format json --print` subprocess.
 
@@ -220,11 +237,18 @@ async def classify(
     shell injection.
 
     Returns parsed classification dict, or None on timeout / parse failure.
-    Caller should treat None as "couldn't classify; log + skip".
+    Caller should treat None as "couldn't classify". `on_failure`, when given,
+    receives a one-line failure mode (timeout, nonzero exit, ...) before the
+    None is returned, so the observer can alert and retry (#95).
 
     `template` selects the channel-specific prompt (PROMPT_TEMPLATE for Killers
     VIP, INSIDERS_PROMPT_TEMPLATE for Dennis / Market Mastery).
     """
+    def fail(reason: str) -> None:
+        if on_failure is not None:
+            on_failure(reason)
+        return None
+
     prompt = build_prompt(msg, reply_chain, template=template)
     cmd = binary.split() + ["-p", prompt, "--output-format", "json", "--print"]
     if model:
@@ -244,15 +268,16 @@ async def classify(
             proc.kill()
             await proc.wait()
             logger.warning("classify timeout msg=%s after %.1fs", msg.get("id"), timeout_sec)
-            return None
+            return fail(f"timeout after {timeout_sec:.0f}s")
     except FileNotFoundError:
         logger.error("classify: `%s` binary not found in PATH", binary)
-        return None
+        return fail(f"binary not found: {binary}")
 
     if proc.returncode != 0:
         logger.warning("classify nonzero exit msg=%s rc=%d stderr=%s",
                        msg.get("id"), proc.returncode, stderr.decode()[:400])
-        return None
+        return fail(f"nonzero exit rc={proc.returncode}: "
+                    f"{_cli_error_detail(stderr, stdout)}")
 
     raw = stdout.decode()
     # Claude CLI with --output-format json wraps the actual response in a meta envelope.
@@ -267,16 +292,16 @@ async def classify(
     if not m:
         logger.warning("classify: no JSON in response msg=%s response=%s",
                        msg.get("id"), response_text[:400])
-        return None
+        return fail("no JSON in response")
     try:
         result = json.loads(m.group(0))
     except json.JSONDecodeError as e:
         logger.warning("classify: JSON parse error msg=%s err=%s", msg.get("id"), e)
-        return None
+        return fail(f"JSON parse error: {e}")
 
     # Sanity-check required fields
-    if "kind" not in result:
+    if not isinstance(result, dict) or "kind" not in result:
         logger.warning("classify: missing 'kind' msg=%s", msg.get("id"))
-        return None
+        return fail("response has no 'kind'")
     result["id"] = msg.get("id")
     return result
