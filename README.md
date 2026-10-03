@@ -59,8 +59,7 @@ draws on, so check it rather than this diagram if the two ever disagree.
 `killers_bot` is not in this stack. It runs from `killers_bot/docker-compose.yml` and reaches the
 receivers over HTTP.
 
-Automation runs from cron, installed by `ft_userdata/automation_scheduler.sh`. Schedules and outputs
-are in the table below.
+What runs on a schedule, and from where, is in [Automation Scripts](#automation-scripts) below.
 
 ## Quick Start
 
@@ -89,12 +88,13 @@ $V -m pytest tests/ -q
 (cd services/insiders-receiver && $V -m pytest tests/ -q)
 (cd ft_userdata/ft_dashboard   && $V -m pytest tests/ -q)
 (cd services/hl-gateway        && $V -m pytest tests/ -q)
+(cd services/trade-webhook     && $V -m pytest tests/ -q)
 $V -m pytest killers_bot/tests/ -q
 ```
 
-These are the same six suites CI runs on every pull request, in the same order
-(`.github/workflows/tests.yml`). No Docker is needed; the read-only VPS checks in
-`tests/test_infrastructure.py` are opt-in behind `MT_VPS_INTEGRATION=1`. `freqtrade` is not required
+These are the Python suites CI runs on every pull request, in the same order
+(`.github/workflows/tests.yml`; `tests/test_readme_matches_fleet.py` fails if the two drift apart).
+No Docker is needed; the read-only VPS checks in `tests/test_infrastructure.py` are opt-in behind `MT_VPS_INTEGRATION=1`. `freqtrade` is not required
 either, and the two funding-staleness tests skip without it.
 
 ### 2. Where things live
@@ -154,49 +154,76 @@ for port in 8095 8096 8102; do
 done
 ```
 
-### 5. Install automation
+### 5. Scheduled jobs
 
-From the repository root:
+There is no installer. The VPS's host cron lines are listed in
+[deploy/vps/README.md](deploy/vps/README.md) and in the table below; the rest of the schedule lives
+in containers. `ft_userdata/automation_scheduler.sh` is the retired pre-VPS installer and refuses to
+run (#100). The health report can be run by hand:
 
 ```bash
-bash ft_userdata/automation_scheduler.sh
 python3 ft_userdata/strategy_health_report.py --stdout
 ```
 
-Each script reads bot ports, credentials and webhook targets from its own constants. Check those
-against your setup before installing the cron entries.
-
 ## Automation Scripts
 
-| Script | Schedule | Output | Purpose |
-|--------|----------|--------|---------|
-| `bot_evolution_tracker.py` | Daily 22:00 | Snapshots | Fleet snapshots and changelog |
-| `strategy_health_report.py` | Daily 23:00 UTC | Telegram | Health scores (0-100), flags, recommendations |
-| `backtest_gate.py` | Weekly Sun 04:00 | Telegram | Validate strategies via backtesting |
-| `tournament_manager.py` | Weekly Sun 05:00 | Rebalance | Rank strategies, rebalance capital |
-| `hyperopt_optimizer.py` | Weekly Sun 06:00 | Proposals | Parameter optimization with OOS validation |
-| `walk_forward.py` | Monthly 1st 07:00 | Validation | Rolling train/test to prevent overfitting |
-| `metrics_exporter.py` | Always-on (Docker) | Prometheus | Prometheus metrics + portfolio circuit breaker |
+What the VPS runs, checked against its crontab, systemd timers and compose file on 2026-10-02:
+
+| Job | How it runs | Schedule | Output |
+|-----|-------------|----------|--------|
+| `strategy_health_report.py` | host cron, `deploy/vps/run-health-report.sh` | Daily 23:00 UTC | Telegram via trade-webhook |
+| Killers open-risk monitor, `services/killers-receiver/warden/risk_warden.py` | host cron, `docker exec killers-receiver` | Every 5 min | Telegram alert when findings change; alerts only |
+| `metrics_exporter.py` | `metrics-exporter` container | Every 60 s | Prometheus metrics + portfolio circuit breaker |
+| `download_funding_rates.py --incremental` | `funding-refresh` container | Hourly at :10 | Funding feathers in `ft_user_data` |
+| Profit-retention collectors, `research/profit_retention/` | systemd timers | Every 1 and 5 min | Read-only research observations |
+
+Not scheduled anywhere, run by hand: `backtest_engine.py` (the six-stage validation pipeline),
+`backtest_gate.py`, `hyperopt_optimizer.py`, `walk_forward.py`, `tournament_manager.py`,
+`bot_rotator.py`, `bot_evolution_tracker.py` and `ai_health_report.py`. No scheduled backup of the
+live databases is installed (#99).
 
 All scripts can be run manually: `python3 script.py --help`
 
 ## Risk Management
 
-Multi-layered defense system:
+What is in force for the deployed fleet, and where each control lives. The numbers are left to the
+code they come from, because tuning PRs change them.
 
-1. **Per-trade**: Stoploss (-2% futures, -5% spot intraday, -10%/-15% daily), trailing stops
-2. **Per-bot**: Protections (StoplossGuard, MaxDrawdown, CooldownPeriod, LowProfitPairs)
-3. **Time-based**: Force-close stale trades (24h BollingerRSI, 48h MasterTraderV1)
+1. **Per-trade stop**: each strategy file sets `stoploss` (`ft_userdata/user_data/strategies/`), and
+   no deployed config overrides it. Live bots place the stop on the exchange as a stop-limit
+   (`order_types.stoploss_on_exchange` in their configs). The dry-run Hyperliquid bots switch that
+   off in their compose entrypoint. Trailing stops are on only in `KeltnerBounceV1` and
+   `OITrendPullbackV1`. `KillersScalpV1`, which both copier bots run, moves its stop to the signal's
+   posted stop through `custom_stoploss`; its own `stoploss` is only the floor until then.
+2. **Per-bot protections**: `CooldownPeriod` and `StoplossGuard` in `KeltnerBounceV1`,
+   `FundingFadeV1` and `OITrendPullbackV1`. `ShortKeltnerV2HL` adds `MaxDrawdown`. `KillersScalpV1`
+   defines none: its entries are admitted by the receivers (layer 7). No strategy uses
+   `LowProfitPairs`.
+3. **Time-based exits** (`custom_exit`): `KeltnerBounceV1` closes a trade still losing after 120h.
+   `FundingFadeV1` closes one still losing after 96h, or under +1% after 168h. `ShortKeltnerV2HL`
+   closes a short after 36h. `OITrendPullbackV1`'s `custom_exit` exits on a close below EMA50, not on
+   a timer. Copier exits come from the receivers.
 4. **Anti-correlation**: not in force. No deployed config uses `OffsetFilter`; the only one that
    does is `BollingerRSIMeanReversion.json`, which is not deployed. `FundingFadeV1` and
    `KeltnerBounceV1` trade overlapping `StaticPairList` whitelists from the same `binance-spot`
    wallet, so their exposure is correlated rather than split.
-5. **Portfolio**: Circuit breaker stops ALL bots at 10% portfolio drawdown
-6. **Automated pause**: not in force for the deployed fleet. `tournament_manager.py` (scheduled
-   weekly by `automation_scheduler.sh`) has a score-below-30 rule, but its hardcoded bot list
-   names only retired strategies and its "pause" sets allocation to zero without stopping a
-   container. `bot_rotator.py` reads `bots_config.json` and does `docker stop` after two
-   consecutive flagged evaluations, but no tracked scheduler runs it. See #31.
+5. **Portfolio circuit breaker** (`ft_userdata/metrics_exporter.py`): when live account equity,
+   adjusted for the deposits and withdrawals recorded in `ft_userdata/account_transfers.json`, falls
+   10% below its peak, it sends `/stopentry` to every live bot and a Telegram alert. That halts new
+   entries only; open positions and their exits keep running. It evaluates only when every live
+   account can be valued (#104).
+6. **Automated pause**: not in force for the deployed fleet. `tournament_manager.py` has a
+   score-below-30 rule, but nothing schedules it, its hardcoded bot list names only retired
+   strategies, and its "pause" sets allocation to zero without stopping a container.
+   `bot_rotator.py` reads `bots_config.json` and does `docker stop` after two consecutive flagged
+   evaluations, but nothing schedules it either. See #31.
+7. **Copier admission and open-risk monitor** (`services/killers-receiver`, settings in
+   `ft_userdata/docker-compose.prod.yml`): each receiver sizes an entry from the signal's posted stop
+   (`KILLERS_RISK_USD`, with margin and leverage caps) and refuses a signal without one
+   (`KILLERS_REQUIRE_POSTED_SL`). It admits at most `KILLERS_MAX_OPEN` positions, counting resting
+   entries, and force-exits a position once the mark crosses its posted stop (`KILLERS_POSTED_SL`).
+   The Killers open-risk monitor (`warden/risk_warden.py`, every 5 minutes) checks the open book
+   against that sizing contract. It only alerts and has no write path to Freqtrade.
 
 `research/risk-implementation-plan.md` is the original 2026-03 plan, kept as a historical record.
 
@@ -254,7 +281,7 @@ ft_userdata/                     # Freqtrade working dir and Compose context
   walk_forward.py                # walk-forward validation
   metrics_exporter.py            # Prometheus metrics + circuit breaker
   bot_evolution_tracker.py       # snapshots
-  automation_scheduler.sh        # cron installer
+  automation_scheduler.sh        # retired pre-VPS cron installer; refuses to run
 
 services/
   killers-receiver/              # Telegram signal copier
