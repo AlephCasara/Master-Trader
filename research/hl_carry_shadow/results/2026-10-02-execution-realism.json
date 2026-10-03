@@ -1,0 +1,1155 @@
+{
+  "inputs": {
+    "replay_summary": {
+      "start": "2026-07-13T05:41:18.355414+00:00",
+      "end": "2026-09-14T01:00:48.631418+00:00",
+      "decision_count": 1510,
+      "closed_episodes": 9,
+      "net_model_usd": 27.63791333777202,
+      "completed_position_hours": 1754.35
+    },
+    "decisions_in_log": 1966,
+    "traded_coins": [
+      "ASTER",
+      "EIGEN",
+      "ENA",
+      "GRAM",
+      "KAITO",
+      "ONDO",
+      "PUMP",
+      "TAO",
+      "UNI",
+      "ZEC",
+      "ZRO"
+    ],
+    "forward_fills": 3
+  },
+  "break_even": {
+    "0%": {
+      "required_net_usd": 0.0,
+      "extra_bps_per_fill": 7.677198149381116
+    },
+    "9%": {
+      "required_net_usd": 27.036215753424653,
+      "extra_bps_per_fill": 0.16713821787426852
+    },
+    "12%": {
+      "required_net_usd": 36.04828767123288,
+      "extra_bps_per_fill": -2.336215092628016
+    }
+  },
+  "fee_scenarios": {
+    "study_fees": {
+      "fees_bps_per_episode": 21.0,
+      "net_usd": 27.63791333777202,
+      "annualized_matched_pct": 9.200297197970109
+    },
+    "base_tier_fees": {
+      "fees_bps_per_episode": 26.0,
+      "net_usd": 23.13791333777202,
+      "annualized_matched_pct": 7.702306489160578
+    },
+    "base_tier_hl_taker_entry": {
+      "fees_bps_per_episode": 29.0,
+      "net_usd": 20.43791333777202,
+      "annualized_matched_pct": 6.80351206387486
+    }
+  },
+  "taker_legs_recorded": {
+    "bn_buy": {
+      "n": 12,
+      "l1_insufficient": 5,
+      "recorded_insufficient": 5,
+      "impact_bps_lower_bound": {
+        "n": 12,
+        "p10": 0.0,
+        "p50": 0.0,
+        "p90": 0.0,
+        "max": 0.0
+      },
+      "l1_coverage": {
+        "n": 12,
+        "p10": 0.12394323080000001,
+        "p50": 1.20288352125,
+        "p90": 5.6283170386500005,
+        "max": 15.041020379000003
+      }
+    },
+    "hl_buy": {
+      "n": 9,
+      "l1_insufficient": 6,
+      "recorded_insufficient": 3,
+      "impact_bps_lower_bound": {
+        "n": 9,
+        "p10": 0.0,
+        "p50": 0.08871611920324682,
+        "p90": 1.1278337012471216,
+        "max": 1.1401433139651385
+      },
+      "l1_coverage": {
+        "n": 9,
+        "p10": 0.16913437920000002,
+        "p50": 0.5764695,
+        "p90": 212.25519566000017,
+        "max": 1055.0446791
+      }
+    },
+    "bn_sell": {
+      "n": 9,
+      "l1_insufficient": 5,
+      "recorded_insufficient": 5,
+      "impact_bps_lower_bound": {
+        "n": 9,
+        "p10": 0.0,
+        "p50": 0.0,
+        "p90": 0.0,
+        "max": 0.0
+      },
+      "l1_coverage": {
+        "n": 9,
+        "p10": 0.0298412984,
+        "p50": 0.38392471,
+        "p90": 8.078625528520003,
+        "max": 26.188136112600002
+      }
+    }
+  },
+  "replay_extra_usd_recorded_impact_lower_bound": 0.36019189350385233,
+  "maker_entry": {
+    "trade_through_bps": {
+      "n": 12,
+      "p10": 0.7089300613994204,
+      "p50": 10.7868682763641,
+      "p90": 41.76817254964763,
+      "max": 68.60727237087247
+    },
+    "qty_over_displayed_queue": {
+      "n": 12,
+      "p10": 0.38008130471395407,
+      "p50": 2.472487279122051,
+      "p90": 16.689700028470938,
+      "max": 426.0722107182725
+    },
+    "bn_mid_move_next_minute_bps": {
+      "n": 12,
+      "p10": 0.0,
+      "p50": 15.740909115811325,
+      "p90": 38.64517684787253,
+      "max": 81.09824612829348
+    },
+    "bn_mid_drift_bps_by_lag_s": {
+      "-120": {
+        "n": 11,
+        "p10": -45.011252813205,
+        "p50": -12.618296529967065,
+        "p90": -6.70465973851902,
+        "max": 0.0
+      },
+      "-60": {
+        "n": 11,
+        "p10": -40.54912306414674,
+        "p50": -15.07594947803931,
+        "p90": 0.0,
+        "max": 0.0
+      },
+      "60": {
+        "n": 12,
+        "p10": 0.0,
+        "p50": 15.740909115811325,
+        "p90": 38.64517684787253,
+        "max": 81.09824612829348
+      },
+      "120": {
+        "n": 12,
+        "p10": 0.662507591232842,
+        "p50": 15.069034000838641,
+        "p90": 46.40881740632374,
+        "max": 55.57099194220621
+      },
+      "300": {
+        "n": 12,
+        "p10": -10.644589000590193,
+        "p50": 15.010792307611975,
+        "p90": 50.42094758568503,
+        "max": 94.47068630175089
+      }
+    },
+    "unconditional_bn_mid_1m_change_bps": {
+      "n": 1265783,
+      "p10": -14.310343663313619,
+      "p50": 0.0,
+      "p90": 14.524328249820861,
+      "max": 943.8567941415798
+    },
+    "fill_delay_h": {
+      "n": 12,
+      "p10": 0.00811,
+      "p50": 0.05575,
+      "p90": 3.331120000000001,
+      "max": 3.8363
+    }
+  },
+  "decision_conditions": {
+    "other": {
+      "hl_spread_bps": {
+        "n": 54889,
+        "p10": 0.1547803125687325,
+        "p50": 0.976514818612265,
+        "p90": 3.289427311867714,
+        "max": 34.587398440304284
+      },
+      "bn_spread_bps": {
+        "n": 55649,
+        "p10": 0.05353998341173811,
+        "p50": 1.8091361374941473,
+        "p90": 6.624710168929968,
+        "max": 27.624309392265218
+      },
+      "hl_ask_l1_usd": {
+        "n": 54889,
+        "p10": 55.454578000000005,
+        "p50": 516.99704,
+        "p90": 19941.351840000032,
+        "max": 81536512.0
+      },
+      "bn_ask_l1_usd": {
+        "n": 55649,
+        "p10": 85.47179399999999,
+        "p50": 1893.7901699999998,
+        "p90": 31186.918256000055,
+        "max": 23581130.680000003
+      },
+      "bn_bid_l1_usd": {
+        "n": 55649,
+        "p10": 91.6373896,
+        "p50": 2181.85107,
+        "p90": 36754.26378800007,
+        "max": 11748572.53
+      },
+      "hl_ask_l1_ge_1000_share": 0.3728251562243801,
+      "bn_ask_l1_ge_1000_share": 0.593901058419738,
+      "bn_bid_l1_ge_1000_share": 0.616596884041043
+    },
+    "all": {
+      "hl_spread_bps": {
+        "n": 75662,
+        "p10": 0.17008856624980023,
+        "p50": 1.1825223201082242,
+        "p90": 4.007212983369625,
+        "max": 71.40259826121618
+      },
+      "bn_spread_bps": {
+        "n": 76720,
+        "p10": 0.1635488798906798,
+        "p50": 2.6784518548272427,
+        "p90": 9.44733112895503,
+        "max": 27.624309392265218
+      },
+      "hl_ask_l1_usd": {
+        "n": 75662,
+        "p10": 57.210123700000004,
+        "p50": 501.81693900000005,
+        "p90": 11107.561396800018,
+        "max": 81536512.0
+      },
+      "bn_ask_l1_usd": {
+        "n": 76720,
+        "p10": 85.20021,
+        "p50": 1694.4286200000001,
+        "p90": 25362.55684000001,
+        "max": 23581130.680000003
+      },
+      "bn_bid_l1_usd": {
+        "n": 76720,
+        "p10": 91.09411200000001,
+        "p50": 1934.894865,
+        "p90": 28299.004672000014,
+        "max": 11748572.53
+      },
+      "hl_ask_l1_ge_1000_share": 0.36656445771985935,
+      "bn_ask_l1_ge_1000_share": 0.5868743482794577,
+      "bn_bid_l1_ge_1000_share": 0.6095933263816475
+    },
+    "traded": {
+      "hl_spread_bps": {
+        "n": 20773,
+        "p10": 0.271085725949308,
+        "p50": 1.8434636047617847,
+        "p90": 5.2980132450325295,
+        "max": 71.40259826121618
+      },
+      "bn_spread_bps": {
+        "n": 21071,
+        "p10": 1.0319384964668719,
+        "p50": 4.749465685108996,
+        "p90": 12.618296529967065,
+        "max": 26.385224274406358
+      },
+      "hl_ask_l1_usd": {
+        "n": 20773,
+        "p10": 61.837377999999994,
+        "p50": 500.031085,
+        "p90": 4231.3609831999975,
+        "max": 1953881.3148999999
+      },
+      "bn_ask_l1_usd": {
+        "n": 21071,
+        "p10": 84.45837399999999,
+        "p50": 1372.5265800000002,
+        "p90": 14070.023879999999,
+        "max": 1599742.28988
+      },
+      "bn_bid_l1_usd": {
+        "n": 21071,
+        "p10": 89.63119999999999,
+        "p50": 1553.918464,
+        "p90": 14724.615996,
+        "max": 358202.86079999997
+      },
+      "hl_ask_l1_ge_1000_share": 0.3500216627352814,
+      "bn_ask_l1_ge_1000_share": 0.568316643728347,
+      "bn_bid_l1_ge_1000_share": 0.591096768069859
+    }
+  },
+  "hl_quote_missing_at_decision": {
+    "fleet-v2-429-window": {
+      "missing": 412,
+      "snapshots": 19640,
+      "share": 0.020977596741344195
+    },
+    "post-correction": {
+      "missing": 0,
+      "snapshots": 18320,
+      "share": 0.0
+    },
+    "pre-fleet-v2": {
+      "missing": 646,
+      "snapshots": 38760,
+      "share": 0.016666666666666666
+    }
+  },
+  "basis": {
+    "ASTER": {
+      "universe_index": 36,
+      "hl_mid_sigma_1m_bps": 10.14658468855512,
+      "mid_basis_bps": {
+        "n": 115548,
+        "p10": -8.531038960532422,
+        "p50": 0.4156275976741064,
+        "p90": 10.556230455810224,
+        "max": 179.4206397103193
+      },
+      "capture_noise_bps": {
+        "rtt_0.05s": 3.5270633703423724,
+        "rtt_0.3s": 5.320913900032195
+      }
+    },
+    "EIGEN": {
+      "universe_index": 38,
+      "hl_mid_sigma_1m_bps": 14.652675524691377,
+      "mid_basis_bps": {
+        "n": 115555,
+        "p10": -10.012515644554076,
+        "p50": 4.250797024440978,
+        "p90": 19.81375074301628,
+        "max": 254.32349949135346
+      },
+      "capture_noise_bps": {
+        "rtt_0.05s": 5.232051677312251,
+        "rtt_0.3s": 7.89070725659291
+      }
+    },
+    "ENA": {
+      "universe_index": 15,
+      "hl_mid_sigma_1m_bps": 17.555915838357883,
+      "mid_basis_bps": {
+        "n": 116446,
+        "p10": -10.069886346892876,
+        "p50": -1.320567844173004,
+        "p90": 11.562505295018566,
+        "max": 125.29550827423242
+      },
+      "capture_noise_bps": {
+        "rtt_0.05s": 3.958200457734741,
+        "rtt_0.3s": 6.017864759074588
+      }
+    },
+    "GRAM": {
+      "universe_index": 39,
+      "hl_mid_sigma_1m_bps": 9.484209214903984,
+      "mid_basis_bps": {
+        "n": 115556,
+        "p10": -9.138840070297416,
+        "p50": 0.9891196834810323,
+        "p90": 13.813158851327945,
+        "max": 209.8765432098748
+      },
+      "capture_noise_bps": {
+        "rtt_0.05s": 3.4305229479671335,
+        "rtt_0.3s": 5.173025398018138
+      }
+    },
+    "KAITO": {
+      "universe_index": 25,
+      "hl_mid_sigma_1m_bps": 18.967580043518886,
+      "mid_basis_bps": {
+        "n": 115499,
+        "p10": -28.838334402879735,
+        "p50": -4.0784313725483745,
+        "p90": 13.362011252983306,
+        "max": 439.2510836051655
+      },
+      "capture_noise_bps": {
+        "rtt_0.05s": 5.502777962344481,
+        "rtt_0.3s": 8.321991969844387
+      }
+    },
+    "ONDO": {
+      "universe_index": 37,
+      "hl_mid_sigma_1m_bps": 14.772411127448166,
+      "mid_basis_bps": {
+        "n": 115558,
+        "p10": -10.14338887744126,
+        "p50": -1.0680908067556283,
+        "p90": 12.126999618960578,
+        "max": 569.3260133162004
+      },
+      "capture_noise_bps": {
+        "rtt_0.05s": 5.20539747499609,
+        "rtt_0.3s": 7.851644214521892
+      }
+    },
+    "PUMP": {
+      "universe_index": 21,
+      "hl_mid_sigma_1m_bps": 20.76621782890779,
+      "mid_basis_bps": {
+        "n": 115416,
+        "p10": -7.058408328922683,
+        "p50": 4.3946385409809885,
+        "p90": 17.086471789427016,
+        "max": 203.90360920292449
+      },
+      "capture_noise_bps": {
+        "rtt_0.05s": 5.5268317663317195,
+        "rtt_0.3s": 8.371130029698367
+      }
+    },
+    "TAO": {
+      "universe_index": 16,
+      "hl_mid_sigma_1m_bps": 12.099203389159157,
+      "mid_basis_bps": {
+        "n": 116415,
+        "p10": -5.824259306151935,
+        "p50": 2.2988505747134624,
+        "p90": 11.97930978261841,
+        "max": 125.14542130629857
+      },
+      "capture_noise_bps": {
+        "rtt_0.05s": 2.8159363410766867,
+        "rtt_0.3s": 4.277714381714849
+      }
+    },
+    "UNI": {
+      "universe_index": 12,
+      "hl_mid_sigma_1m_bps": 14.773058975564716,
+      "mid_basis_bps": {
+        "n": 116534,
+        "p10": -7.494775777072693,
+        "p50": -1.0257219568332587,
+        "p90": 9.492460228151197,
+        "max": 165.12463263306688
+      },
+      "capture_noise_bps": {
+        "rtt_0.05s": 2.9852303517037773,
+        "rtt_0.3s": 4.553362580782883
+      }
+    },
+    "ZEC": {
+      "universe_index": 18,
+      "hl_mid_sigma_1m_bps": 14.855154884700593,
+      "mid_basis_bps": {
+        "n": 116384,
+        "p10": -7.0403379431733795,
+        "p50": 0.1963305815089189,
+        "p90": 9.650498690066954,
+        "max": 303.2869408160521
+      },
+      "capture_noise_bps": {
+        "rtt_0.05s": 3.663936947389652,
+        "rtt_0.3s": 5.558290000601097
+      }
+    },
+    "ZRO": {
+      "universe_index": 31,
+      "hl_mid_sigma_1m_bps": 18.497349844063425,
+      "mid_basis_bps": {
+        "n": 115530,
+        "p10": -9.065374019344707,
+        "p50": 4.118993135011628,
+        "p90": 16.863661110267728,
+        "max": 294.9504483246823
+      },
+      "capture_noise_bps": {
+        "rtt_0.05s": 5.9699939912525,
+        "rtt_0.3s": 9.014493242703518
+      }
+    }
+  },
+  "funding_notional": {
+    "episodes": [
+      {
+        "ep_id": "ep000001",
+        "coin": "ZRO",
+        "settlements": 202,
+        "replay_funding_received": 6.686107600000001,
+        "fixed_notional_received": 6.686107600000008,
+        "marked_notional_received": 7.182893569380384
+      },
+      {
+        "ep_id": "ep000002",
+        "coin": "KAITO",
+        "settlements": 116,
+        "replay_funding_received": 2.3922262,
+        "fixed_notional_received": 2.3922262000000027,
+        "marked_notional_received": 2.201786142784083
+      },
+      {
+        "ep_id": "ep000003",
+        "coin": "ZRO",
+        "settlements": 235,
+        "replay_funding_received": 3.8240579,
+        "fixed_notional_received": 3.8240579000000148,
+        "marked_notional_received": 3.6769507041290965
+      },
+      {
+        "ep_id": "ep000006",
+        "coin": "EIGEN",
+        "settlements": 34,
+        "replay_funding_received": 0.8207251000000001,
+        "fixed_notional_received": 0.8207250999999991,
+        "marked_notional_received": 0.8306516371095571
+      },
+      {
+        "ep_id": "ep000004",
+        "coin": "ZEC",
+        "settlements": 239,
+        "replay_funding_received": 8.8487896,
+        "fixed_notional_received": 8.848789600000003,
+        "marked_notional_received": 11.97313181474058
+      },
+      {
+        "ep_id": "ep000007",
+        "coin": "GRAM",
+        "settlements": 223,
+        "replay_funding_received": 5.6968667,
+        "fixed_notional_received": 5.6968667000000295,
+        "marked_notional_received": 5.505825896698654
+      },
+      {
+        "ep_id": "ep000008",
+        "coin": "PUMP",
+        "settlements": 85,
+        "replay_funding_received": 1.6665518000000001,
+        "fixed_notional_received": 1.6665517999999977,
+        "marked_notional_received": 1.7934045315802714
+      },
+      {
+        "ep_id": "ep000009",
+        "coin": "TAO",
+        "settlements": 97,
+        "replay_funding_received": 1.4227757,
+        "fixed_notional_received": 1.422775699999997,
+        "marked_notional_received": 1.381601870941043
+      },
+      {
+        "ep_id": "ep000005",
+        "coin": "ASTER",
+        "settlements": 517,
+        "replay_funding_received": 10.6916995,
+        "fixed_notional_received": 10.69169949999996,
+        "marked_notional_received": 11.49100682053737
+      }
+    ],
+    "totals": {
+      "replay_funding_received": 42.0498001,
+      "fixed_notional_received": 42.04980010000001,
+      "marked_notional_received": 46.03725298790104
+    }
+  },
+  "funding_availability": {
+    "failed_coin_hour_fetches": 95,
+    "coin_hours_observed": 78600,
+    "signals_or_exits_in_a_failed_hour": [],
+    "note": "A failed fetch is backfilled next hour, so the live tracker lacked that settlement at that decision while the replay (complete funding.jsonl) had it."
+  },
+  "forward_public_depth": {
+    "replay_extra_usd_at_sampled_median_impact": 1.657862304546966,
+    "net_usd": 25.980051033225052,
+    "annualized_matched_pct": 8.648416680481905,
+    "coins_without_sample": []
+  },
+  "legs": [
+    {
+      "ep_id": "ep000001",
+      "coin": "ZRO",
+      "event": "entry",
+      "period": "pre-fleet-v2",
+      "replay": true,
+      "fill_delay_h": 0.0534,
+      "hl_maker_queue_ahead_qty": 510.1,
+      "hl_maker_qty_over_queue": 2.4744088777613733,
+      "trade_through_bps": 5.04878387418375,
+      "bn_mid_next_minute_bps": 0.0,
+      "bn_mid_drift_bps": {
+        "-120": -12.618296529967065,
+        "-60": -12.618296529967065,
+        "60": 0.0,
+        "120": -12.618296529967065,
+        "300": 0.0
+      },
+      "entry_exec_basis_bps": -9.20554854981095,
+      "bn_buy": {
+        "recorded_levels": 1,
+        "l1_coverage": 5.2970459157,
+        "recorded_coverage": 5.2970459157,
+        "impact_bps": 0.0,
+        "impact_is_lower_bound": false
+      },
+      "hl_spread_bps": 3.783961050427171,
+      "bn_spread_bps": 12.618296529968466
+    },
+    {
+      "ep_id": "ep000002",
+      "coin": "KAITO",
+      "event": "entry",
+      "period": "pre-fleet-v2",
+      "replay": true,
+      "fill_delay_h": 3.8363,
+      "hl_maker_queue_ahead_qty": 245.0,
+      "hl_maker_qty_over_queue": 4.0004240449487645,
+      "trade_through_bps": 68.60727237087247,
+      "bn_mid_next_minute_bps": 81.09824612829348,
+      "bn_mid_drift_bps": {
+        "-120": -187.6007621280972,
+        "-60": -40.54912306414674,
+        "60": 81.09824612829348,
+        "120": 46.4116468806491,
+        "300": 50.80853974302479
+      },
+      "entry_exec_basis_bps": -31.265266243283747,
+      "bn_buy": {
+        "recorded_levels": 1,
+        "l1_coverage": 0.05479011,
+        "recorded_coverage": 0.05479011,
+        "impact_bps": 0.0,
+        "impact_is_lower_bound": true
+      },
+      "hl_spread_bps": 8.75699343225396,
+      "bn_spread_bps": 0.9770873027503931
+    },
+    {
+      "ep_id": "ep000003",
+      "coin": "ZRO",
+      "event": "entry",
+      "period": "pre-fleet-v2",
+      "replay": true,
+      "fill_delay_h": 0.003,
+      "hl_maker_queue_ahead_qty": 652.0,
+      "hl_maker_qty_over_queue": 1.812527128999803,
+      "trade_through_bps": 1.0635909192974924,
+      "bn_mid_next_minute_bps": 0.0,
+      "bn_mid_drift_bps": {
+        "-120": 0.0,
+        "-60": -11.827321111766882,
+        "60": 0.0,
+        "120": 0.0,
+        "300": -11.827321111766882
+      },
+      "entry_exec_basis_bps": 2.2458628841610344,
+      "bn_buy": {
+        "recorded_levels": 1,
+        "l1_coverage": 1.3880477665,
+        "recorded_coverage": 1.3880477665,
+        "impact_bps": 0.0,
+        "impact_is_lower_bound": false
+      },
+      "hl_spread_bps": 0.8271151994235538,
+      "bn_spread_bps": 11.827321111768196
+    },
+    {
+      "ep_id": "ep000004",
+      "coin": "ZEC",
+      "event": "entry",
+      "period": "pre-fleet-v2",
+      "replay": true,
+      "fill_delay_h": 0.0199,
+      "hl_maker_queue_ahead_qty": 7.03,
+      "hl_maker_qty_over_queue": 0.24938640345827118,
+      "trade_through_bps": 22.966742053683607,
+      "bn_mid_next_minute_bps": 22.789225955174544,
+      "bn_mid_drift_bps": {
+        "-120": -13.147630358755006,
+        "-60": -15.07594947803931,
+        "60": 22.789225955174544,
+        "120": 14.725346001804173,
+        "300": 0.17530173811657399
+      },
+      "entry_exec_basis_bps": -1.0518012095724272,
+      "bn_buy": {
+        "recorded_levels": 1,
+        "l1_coverage": 0.11407800000000001,
+        "recorded_coverage": 0.11407800000000001,
+        "impact_bps": 0.0,
+        "impact_is_lower_bound": true
+      },
+      "hl_spread_bps": 0.5247369755905078,
+      "bn_spread_bps": 0.17530173811657399
+    },
+    {
+      "ep_id": "ep000005",
+      "coin": "ASTER",
+      "event": "entry",
+      "period": "pre-fleet-v2",
+      "replay": true,
+      "fill_delay_h": 0.7366,
+      "hl_maker_queue_ahead_qty": 83.0,
+      "hl_maker_qty_over_queue": 18.09961958219562,
+      "trade_through_bps": 16.524952678544448,
+      "bn_mid_next_minute_bps": 0.0,
+      "bn_mid_drift_bps": {
+        "-120": -45.011252813205,
+        "-60": -45.011252813205,
+        "60": 0.0,
+        "120": 15.00375093773278,
+        "300": 15.00375093773278
+      },
+      "entry_exec_basis_bps": -20.089955022488873,
+      "bn_buy": {
+        "recorded_levels": 1,
+        "l1_coverage": 15.041020379000003,
+        "recorded_coverage": 15.041020379000003,
+        "impact_bps": 0.0,
+        "impact_is_lower_bound": false
+      },
+      "hl_spread_bps": 0.5998980173359877,
+      "bn_spread_bps": 15.003750937734445
+    },
+    {
+      "ep_id": "ep000006",
+      "coin": "EIGEN",
+      "event": "entry",
+      "period": "pre-fleet-v2",
+      "replay": true,
+      "fill_delay_h": 3.6194,
+      "hl_maker_queue_ahead_qty": 1250.09,
+      "hl_maker_qty_over_queue": 3.7293352174680723,
+      "trade_through_bps": 4.662004662005443,
+      "bn_mid_next_minute_bps": 16.34750116767815,
+      "bn_mid_drift_bps": {
+        "-120": -30.359645025689474,
+        "-60": -25.688930406351936,
+        "60": 16.34750116767815,
+        "120": 35.03035964502442,
+        "300": 39.70107426436196
+      },
+      "entry_exec_basis_bps": 14.005602240896112,
+      "bn_buy": {
+        "recorded_levels": 1,
+        "l1_coverage": 0.998259405,
+        "recorded_coverage": 0.998259405,
+        "impact_bps": 0.0,
+        "impact_is_lower_bound": true
+      },
+      "hl_spread_bps": 4.658746797111064,
+      "bn_spread_bps": 9.341429238673784
+    },
+    {
+      "ep_id": "ep000007",
+      "coin": "GRAM",
+      "event": "entry",
+      "period": "fleet-v2-429-window",
+      "replay": true,
+      "fill_delay_h": 0.0527,
+      "hl_maker_queue_ahead_qty": 271.0,
+      "hl_maker_qty_over_queue": 2.470565680482729,
+      "trade_through_bps": 0.6695232994107457,
+      "bn_mid_next_minute_bps": 13.409319477036552,
+      "bn_mid_drift_bps": {
+        "-120": -6.70465973851902,
+        "-60": 0.0,
+        "60": 13.409319477036552,
+        "120": 26.818638954073105,
+        "300": 46.93261816962718
+      },
+      "entry_exec_basis_bps": 10.72386058981264,
+      "bn_buy": {
+        "recorded_levels": 1,
+        "l1_coverage": 4.406149872,
+        "recorded_coverage": 4.406149872,
+        "impact_bps": 0.0,
+        "impact_is_lower_bound": false
+      },
+      "hl_spread_bps": 2.6775553919268757,
+      "bn_spread_bps": 6.704659738517531
+    },
+    {
+      "ep_id": "ep000008",
+      "coin": "PUMP",
+      "event": "entry",
+      "period": "fleet-v2-429-window",
+      "replay": true,
+      "fill_delay_h": 0.0699,
+      "hl_maker_queue_ahead_qty": 755001.0,
+      "hl_maker_qty_over_queue": 0.33329178584589336,
+      "trade_through_bps": 0.0,
+      "bn_mid_next_minute_bps": 15.1343170639445,
+      "bn_mid_drift_bps": {
+        "-120": -7.567158531970063,
+        "-60": -20.179089418588294,
+        "60": 15.1343170639445,
+        "120": 15.1343170639445,
+        "300": -12.61193088661823
+      },
+      "entry_exec_basis_bps": 22.698612862548117,
+      "bn_buy": {
+        "recorded_levels": 1,
+        "l1_coverage": 0.39284977,
+        "recorded_coverage": 0.39284977,
+        "impact_bps": 0.0,
+        "impact_is_lower_bound": true
+      },
+      "hl_spread_bps": 2.516039753428438,
+      "bn_spread_bps": 2.5223861773240834
+    },
+    {
+      "ep_id": "ep000009",
+      "coin": "TAO",
+      "event": "entry",
+      "period": "fleet-v2-429-window",
+      "replay": true,
+      "fill_delay_h": 0.1268,
+      "hl_maker_queue_ahead_qty": 4.687,
+      "hl_maker_qty_over_queue": 0.8011869745265003,
+      "trade_through_bps": 18.024784078105945,
+      "bn_mid_next_minute_bps": 7.508916838745584,
+      "bn_mid_drift_bps": {
+        "60": 7.508916838745584,
+        "120": 7.508916838745584,
+        "300": 15.017833677491168
+      },
+      "entry_exec_basis_bps": -3.753753753752474,
+      "bn_buy": {
+        "recorded_levels": 1,
+        "l1_coverage": 5.28357841,
+        "recorded_coverage": 5.28357841,
+        "impact_bps": 0.0,
+        "impact_is_lower_bound": false
+      },
+      "hl_spread_bps": 4.871742022524398,
+      "bn_spread_bps": 3.7544584193717245
+    },
+    {
+      "ep_id": "ep000010",
+      "coin": "ONDO",
+      "event": "entry",
+      "period": "post-correction",
+      "replay": false,
+      "fill_delay_h": 0.0082,
+      "hl_maker_queue_ahead_qty": 2006.0,
+      "hl_maker_qty_over_queue": 1.2476336133256052,
+      "trade_through_bps": 17.51927119831761,
+      "bn_mid_next_minute_bps": 36.354519242823294,
+      "bn_mid_drift_bps": {
+        "-120": -10.028832894572181,
+        "-60": 0.0,
+        "60": 36.354519242823294,
+        "120": 46.38335213739547,
+        "300": 12.53604111821488
+      },
+      "entry_exec_basis_bps": 16.54550012534594,
+      "bn_buy": {
+        "recorded_levels": 1,
+        "l1_coverage": 1.017719276,
+        "recorded_coverage": 1.017719276,
+        "impact_bps": 0.0,
+        "impact_is_lower_bound": false
+      },
+      "hl_spread_bps": 0.9993004896568525,
+      "bn_spread_bps": 2.5072082236426976
+    },
+    {
+      "ep_id": "ep000011",
+      "coin": "UNI",
+      "event": "entry",
+      "period": "post-correction",
+      "replay": false,
+      "fill_delay_h": 0.0081,
+      "hl_maker_queue_ahead_qty": 44.3,
+      "hl_maker_qty_over_queue": 2.500012562563127,
+      "trade_through_bps": 43.85722038253251,
+      "bn_mid_next_minute_bps": 34.781648539724166,
+      "bn_mid_drift_bps": {
+        "-120": -12.145972505934116,
+        "-60": -32.021200242919356,
+        "60": 34.781648539724166,
+        "120": 6.6250759123284135,
+        "300": 27.604482968034404
+      },
+      "entry_exec_basis_bps": -30.584078613228627,
+      "bn_buy": {
+        "recorded_levels": 1,
+        "l1_coverage": 0.21273030799999998,
+        "recorded_coverage": 0.21273030799999998,
+        "impact_bps": 0.0,
+        "impact_is_lower_bound": true
+      },
+      "hl_spread_bps": 1.3231159380349038,
+      "bn_spread_bps": 1.1041793187227098
+    },
+    {
+      "ep_id": "ep000012",
+      "coin": "ENA",
+      "event": "entry",
+      "period": "post-correction",
+      "replay": false,
+      "fill_delay_h": 0.0581,
+      "hl_maker_queue_ahead_qty": 13.0,
+      "hl_maker_qty_over_queue": 426.0722107182725,
+      "trade_through_bps": 2.215575495734158,
+      "bn_mid_next_minute_bps": 38.89969435954466,
+      "bn_mid_drift_bps": {
+        "-120": -22.228396776883102,
+        "-60": -5.5570991942200045,
+        "60": 38.89969435954466,
+        "120": 55.57099194220621,
+        "300": 94.47068630175089
+      },
+      "entry_exec_basis_bps": 30.000000000000707,
+      "bn_buy": {
+        "recorded_levels": 1,
+        "l1_coverage": 5.6651249412,
+        "recorded_coverage": 5.6651249412,
+        "impact_bps": 0.0,
+        "impact_is_lower_bound": false
+      },
+      "hl_spread_bps": 4.429188351234456,
+      "bn_spread_bps": 5.5570991942200045
+    },
+    {
+      "ep_id": "ep000001",
+      "coin": "ZRO",
+      "event": "exit",
+      "period": "pre-fleet-v2",
+      "replay": true,
+      "exit_exec_basis_bps": 1.5503875968993408,
+      "hl_buy": {
+        "recorded_levels": 2,
+        "l1_coverage": 0.5173523099999999,
+        "recorded_coverage": 0.936700821,
+        "impact_bps": 0.37407249827371747,
+        "impact_is_lower_bound": true
+      },
+      "bn_sell": {
+        "recorded_levels": 1,
+        "l1_coverage": 1.5375187755,
+        "recorded_coverage": 1.5375187755,
+        "impact_bps": 0.0,
+        "impact_is_lower_bound": false
+      },
+      "hl_spread_bps": 2.8423405382359137,
+      "bn_spread_bps": 12.91155584247903
+    },
+    {
+      "ep_id": "ep000002",
+      "coin": "KAITO",
+      "event": "exit",
+      "period": "pre-fleet-v2",
+      "replay": true,
+      "exit_exec_basis_bps": 1.346389228886836,
+      "hl_buy": {
+        "recorded_levels": 2,
+        "l1_coverage": 0.5764695,
+        "recorded_coverage": 0.7019664,
+        "impact_bps": 1.1401433139651385,
+        "impact_is_lower_bound": true
+      },
+      "bn_sell": {
+        "recorded_levels": 1,
+        "l1_coverage": 0.0132639,
+        "recorded_coverage": 0.0132639,
+        "impact_bps": 0.0,
+        "impact_is_lower_bound": true
+      },
+      "hl_spread_bps": 1.9583124242689864,
+      "bn_spread_bps": 2.4476808224218454
+    },
+    {
+      "ep_id": "ep000003",
+      "coin": "ZRO",
+      "event": "exit",
+      "period": "pre-fleet-v2",
+      "replay": true,
+      "exit_exec_basis_bps": 4.332129963899241,
+      "hl_buy": {
+        "recorded_levels": 2,
+        "l1_coverage": 0.181592374,
+        "recorded_coverage": 0.354976705,
+        "impact_bps": 0.7875224453344046,
+        "impact_is_lower_bound": true
+      },
+      "bn_sell": {
+        "recorded_levels": 1,
+        "l1_coverage": 3.5512478825000002,
+        "recorded_coverage": 3.5512478825000002,
+        "impact_bps": 0.0,
+        "impact_is_lower_bound": false
+      },
+      "hl_spread_bps": 1.6841294854987912,
+      "bn_spread_bps": 12.026458208057738
+    },
+    {
+      "ep_id": "ep000006",
+      "coin": "EIGEN",
+      "event": "exit",
+      "period": "pre-fleet-v2",
+      "replay": true,
+      "exit_exec_basis_bps": -47.61904761904767,
+      "hl_buy": {
+        "recorded_levels": 2,
+        "l1_coverage": 0.9818694599999999,
+        "recorded_coverage": 1.6064248199999998,
+        "impact_bps": 0.08670826019439812,
+        "impact_is_lower_bound": false
+      },
+      "bn_sell": {
+        "recorded_levels": 1,
+        "l1_coverage": 0.104969865,
+        "recorded_coverage": 0.104969865,
+        "impact_bps": 0.0,
+        "impact_is_lower_bound": true
+      },
+      "hl_spread_bps": 9.573958831975968,
+      "bn_spread_bps": 4.760771244942477
+    },
+    {
+      "ep_id": "ep000004",
+      "coin": "ZEC",
+      "event": "exit",
+      "period": "fleet-v2-429-window",
+      "replay": true,
+      "exit_exec_basis_bps": -26.551076862279903,
+      "hl_buy": {
+        "recorded_levels": 2,
+        "l1_coverage": 1055.0446791,
+        "recorded_coverage": 1055.3127624,
+        "impact_bps": 0.0,
+        "impact_is_lower_bound": false
+      },
+      "bn_sell": {
+        "recorded_levels": 1,
+        "l1_coverage": 0.11407800000000001,
+        "recorded_coverage": 0.11407800000000001,
+        "impact_bps": 0.0,
+        "impact_is_lower_bound": true
+      },
+      "hl_spread_bps": 0.12382290847618459,
+      "bn_spread_bps": 0.12349261822863307
+    },
+    {
+      "ep_id": "ep000007",
+      "coin": "GRAM",
+      "event": "exit",
+      "period": "fleet-v2-429-window",
+      "replay": true,
+      "exit_exec_basis_bps": 6.060606060605393,
+      "hl_buy": {
+        "recorded_levels": 2,
+        "l1_coverage": 1.5578248,
+        "recorded_coverage": 3.1007136,
+        "impact_bps": 0.0,
+        "impact_is_lower_bound": false
+      },
+      "bn_sell": {
+        "recorded_levels": 1,
+        "l1_coverage": 3.0287818239999997,
+        "recorded_coverage": 3.0287818239999997,
+        "impact_bps": 0.0,
+        "impact_is_lower_bound": false
+      },
+      "hl_spread_bps": 5.301223067892937,
+      "bn_spread_bps": 7.5728890571744785
+    },
+    {
+      "ep_id": "ep000008",
+      "coin": "PUMP",
+      "event": "exit",
+      "period": "fleet-v2-429-window",
+      "replay": true,
+      "exit_exec_basis_bps": 7.168458781360885,
+      "hl_buy": {
+        "recorded_levels": 2,
+        "l1_coverage": 1.553440574,
+        "recorded_coverage": 22.206759687999998,
+        "impact_bps": 0.0,
+        "impact_is_lower_bound": false
+      },
+      "bn_sell": {
+        "recorded_levels": 1,
+        "l1_coverage": 0.033985648,
+        "recorded_coverage": 0.033985648,
+        "impact_bps": 0.0,
+        "impact_is_lower_bound": true
+      },
+      "hl_spread_bps": 2.388059701492854,
+      "bn_spread_bps": 2.389200812326521
+    },
+    {
+      "ep_id": "ep000009",
+      "coin": "TAO",
+      "event": "exit",
+      "period": "fleet-v2-429-window",
+      "replay": true,
+      "exit_exec_basis_bps": -4.2553191489359286,
+      "hl_buy": {
+        "recorded_levels": 2,
+        "l1_coverage": 0.11930240000000002,
+        "recorded_coverage": 33.384433200000004,
+        "impact_bps": 1.1247562980676173,
+        "impact_is_lower_bound": false
+      },
+      "bn_sell": {
+        "recorded_levels": 1,
+        "l1_coverage": 0.38392471,
+        "recorded_coverage": 0.38392471,
+        "impact_bps": 0.0,
+        "impact_is_lower_bound": true
+      },
+      "hl_spread_bps": 0.4257221311658114,
+      "bn_spread_bps": 4.254413954477529
+    },
+    {
+      "ep_id": "ep000005",
+      "coin": "ASTER",
+      "event": "exit",
+      "period": "fleet-v2-429-window",
+      "replay": true,
+      "exit_exec_basis_bps": 7.183908045977816,
+      "hl_buy": {
+        "recorded_levels": 2,
+        "l1_coverage": 0.38208884000000004,
+        "recorded_coverage": 1.08901976,
+        "impact_bps": 0.08871611920324682,
+        "impact_is_lower_bound": false
+      },
+      "bn_sell": {
+        "recorded_levels": 1,
+        "l1_coverage": 26.188136112600002,
+        "recorded_coverage": 26.188136112600002,
+        "impact_bps": 0.0,
+        "impact_is_lower_bound": false
+      },
+      "hl_spread_bps": 1.8666494360559631,
+      "bn_spread_bps": 14.35750179468774
+    }
+  ]
+}
