@@ -507,7 +507,10 @@ def send_circuit_breaker_alert(portfolio_value: float, drawdown_pct: float) -> N
     )
     try:
         payload = {"type": "status", "bot_name": "fleet-circuit-breaker", "status": message}
-        resp = requests.post(WEBHOOK_URL, json=payload, timeout=10)
+        # trade-webhook's shared secret (#97); unset sends no header.
+        token = os.environ.get("TRADE_WEBHOOK_NOTIFY_TOKEN", "").strip()
+        headers = {"X-Notify-Token": token} if token else {}
+        resp = requests.post(WEBHOOK_URL, json=payload, headers=headers, timeout=10)
         if resp.status_code in (200, 201, 204):
             log.info("Circuit breaker alert sent to Telegram")
         else:
