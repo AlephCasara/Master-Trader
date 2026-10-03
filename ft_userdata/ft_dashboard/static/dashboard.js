@@ -57,21 +57,30 @@ function dash() {
       const next = {light: 'dark', dark: 'system', system: 'light'}[this.themePreference] || 'light';
       window.masterTheme?.set(next); this.themePreference = next;
     },
-    closeTrade: null, closeBusy: false, closeMessage: '', closeUser: '', closePassword: '', closeRequestId: null,
-    showClose(trade) {
-      this.closeTrade = {...trade}; this.closeMessage = ''; this.closePassword = '';
+    closeTrade: null, closeKind: 'close', closeBusy: false, closeMessage: '', closeUser: '', closePassword: '', closeRequestId: null,
+    // Actions already accepted or left uncertain stay disabled for that trade
+    // and action only; another position's dialog starts enabled.
+    _actionSubmitted: {},
+    _actionKey(trade, kind) { return trade.bot_key + ':' + trade.trade_id + ':' + trade.open_ts + ':' + kind; },
+    showClose(trade, kind = 'close') {
+      this.closeTrade = {...trade}; this.closeKind = kind; this.closeMessage = ''; this.closePassword = '';
+      this.closeBusy = !!this._actionSubmitted[this._actionKey(trade, kind)];
+      if (this.closeBusy) this.closeMessage = 'A request for this action was already submitted. Check the bot’s orders.';
       this.closeRequestId = crypto.randomUUID();
       this.$refs.closeDialog.showModal();
     },
     dismissClose() { if (!this.closeBusy) { this.$refs.closeDialog.close(); this.closePassword = ''; } },
     async submitClose() {
       if (this.closeBusy || !this.closeTrade) return;
-      const t = this.closeTrade; this.closeBusy = true; this.closeMessage = 'Submitting exit request…';
+      const t = this.closeTrade; const cancel = this.closeKind === 'cancel-entry';
+      this.closeBusy = true; this.closeMessage = cancel ? 'Submitting cancel request…' : 'Submitting exit request…';
       try {
         const credential = btoa(String.fromCharCode(...new TextEncoder().encode(this.closeUser+':'+this.closePassword)));
-        const r = await fetch(`/api/trades/${encodeURIComponent(t.bot_key)}/${t.trade_id}/close`, {
-          method:'POST', headers:{'Content-Type':'application/json','X-Trade-Action':'close','Authorization':'Basic '+credential},
-          body:JSON.stringify({request_id:this.closeRequestId,pair:t.pair,amount:t.amount,open_timestamp:t.open_ts,is_short:!!t.is_short})
+        const body = {request_id:this.closeRequestId,pair:t.pair,amount:t.amount,open_timestamp:t.open_ts,is_short:!!t.is_short};
+        if (cancel) body.order_id = t.entry?.order_id;
+        const r = await fetch(`/api/trades/${encodeURIComponent(t.bot_key)}/${t.trade_id}/${this.closeKind}`, {
+          method:'POST', headers:{'Content-Type':'application/json','X-Trade-Action':this.closeKind,'Authorization':'Basic '+credential},
+          body:JSON.stringify(body)
         });
         const result = await r.json();
         if (!r.ok) {
@@ -79,11 +88,15 @@ function dash() {
           if ([401,403,409,422,503].includes(r.status)) this.closeBusy = false;
           return;
         }
-        this.closeMessage = result.state==='already_closed' ? 'This position is already closed.' : result.state==='accepted' ? 'Exit request accepted. Waiting for the bot to report the fill.' : 'Exit status is uncertain. Check the bot’s orders before taking further action.';
+        this.closeMessage = cancel
+          ? (result.state==='already_closed' ? 'This trade is no longer open.' : result.state==='no_open_entry' ? 'The entry order is no longer resting. Refresh to see the current position.' : ['cancelled','accepted'].includes(result.state) ? 'Entry order cancelled: the bot no longer reports it resting, and nothing filled.' : 'Cancel unconfirmed — check the exchange before taking further action.')
+          : (result.state==='already_closed' ? 'This position is already closed.' : result.state==='accepted' ? 'Exit request accepted. Waiting for the bot to report the fill.' : 'Exit status is uncertain. Check the bot’s orders before taking further action.');
         // Keep submission disabled after accepted/uncertain responses. Refresh does not mean filled.
+        this._actionSubmitted[this._actionKey(t, this.closeKind)] = true;
         await this.refresh();
       } catch (_) {
-        this.closeMessage = 'Connection interrupted. The exit may have been submitted. Check the bot’s orders before trying again.';
+        this._actionSubmitted[this._actionKey(t, this.closeKind)] = true;
+        this.closeMessage = 'Connection interrupted. The ' + (cancel ? 'cancel' : 'exit') + ' may have been submitted. Check the bot’s orders before trying again.';
       } finally { this.closePassword = ''; }
     },
     expandTrade(trade) {
@@ -252,8 +265,11 @@ function dash() {
         ? Math.max(...live.map(b => b.baseline?.max_dd_pct || 0))
         : 0;
       const ddCap = ddBacktest * 1.5;
-      const open = live.reduce((s, b) => s + (b.open_trades || []).length, 0);
-      const openNotional = live.reduce((s, b) => s + (b.open_trades || []).reduce((a, t) => a + (t.stake_amount || 0), 0), 0);
+      // An unfilled entry order is not a position or exposure; its stake is only requested.
+      const isPendingEntry = t => t.entry?.state === 'pending' && !(Number(t.amount) > 0);
+      const pendingEntries = live.reduce((s, b) => s + (b.open_trades || []).filter(isPendingEntry).length, 0);
+      const open = live.reduce((s, b) => s + (b.open_trades || []).length, 0) - pendingEntries;
+      const openNotional = live.reduce((s, b) => s + (b.open_trades || []).reduce((a, t) => a + (isPendingEntry(t) ? 0 : (t.stake_amount || 0)), 0), 0);
       const car = live.reduce((s, b) => s + (b.capital_at_risk?.abs_loss || 0), 0);
       const carPct = start ? (car / start * 100) : 0;
 
@@ -293,7 +309,7 @@ function dash() {
         expectancySample: closedTrades,
         drawdownMaxPct: ddMax, drawdownCurrentPct: ddCurrent,
         drawdownBacktest: ddBacktest, drawdownCap: ddCap,
-        openCount: open, openNotional,
+        openCount: open, pendingEntries, openNotional,
         capitalAtRisk: car, capitalAtRiskPct: carPct,
         concentration, avgWin, avgLoss, payoff,
       };
@@ -1002,13 +1018,18 @@ function dash() {
           const postedSL = (b.key === 'killers-ft') ? this._killersSL[sym] : null;
           const ftStop = (typeof t.stop_loss_abs === 'number' && t.stop_loss_abs > 0) ? t.stop_loss_abs : null;
           const stopIsPosted = (typeof postedSL === 'number' && postedSL > 0);
+          // A resting entry with nothing filled is an order, not a position:
+          // open_rate is its limit and Freqtrade's stop is only a placeholder.
+          // A trade that holds quantity is never pending, even if an order record lags.
+          const entryPending = t.entry?.state === 'pending' && !(Number(t.amount) > 0);
           out.push({
             bot_key: b.key, bot_name: b.name, pair: t.pair, dry_run: b.dry_run, trade_id: t.trade_id, amount: t.amount,
+            entry: t.entry ?? null, entry_pending: entryPending, posted_stop: t.posted_stop ?? null,
             open_rate: t.open_rate, close_rate: t.current_rate,
             open_ts: t.open_timestamp, close_ts: now,
             profit_pct: t.profit_pct, profit_abs: t.profit_abs,
             is_win: (t.profit_abs || 0) > 0, is_open: true,
-            stop_rate: ftStop,
+            stop_rate: entryPending ? null : ftStop,
             is_short: t.is_short,
             exit_levels: (t.exit_levels || []).filter(x => ["active","pending","unknown","placing","blocked","rejected"].includes(x.state)),
             stop_is_posted: false,
@@ -1083,7 +1104,7 @@ function dash() {
     // is a resting exchange order. Unreported settings say so, never "off".
     exitPolicyRows(trade) {
       const policy = trade.exit_policy;
-      if (!trade.is_open || !policy) return [];
+      if (!trade.is_open || !policy || trade.entry_pending) return [];
       const openMs = toMs(trade.open_ts);
       const age = openMs ? Math.floor((toMs(trade.close_ts) - openMs) / 60000) : null;
       const pct = ratio => this.fmtPctSigned(ratio * 100);
@@ -1133,6 +1154,39 @@ function dash() {
         }
       }
       if (policy.receiver_driven) rows.push({ label: 'Receiver', text: 'Target exits and stop moves come from the source signal; the strategy adds no time or signal exit' });
+      return rows;
+    },
+    entryResting(trade) { return !!trade.is_open && ['pending', 'partial'].includes(trade.entry?.state); },
+    // #159: a resting entry with nothing filled is an order, not a position.
+    isPendingEntry(t) { return t?.entry?.state === 'pending' && !(Number(t?.amount) > 0); },
+    openPositionCount(bot) { return (bot?.open_trades || []).filter(t => !this.isPendingEntry(t)).length; },
+    pendingEntryCount(bot) { return (bot?.open_trades || []).filter(t => this.isPendingEntry(t)).length; },
+    // Dashboard cancel exists only for an entry with nothing filled at all.
+    canCancelEntry(trade) { return this.entryResting(trade) && !!trade.entry_pending && trade.entry?.cancellable === true && !!trade.entry?.order_id; },
+    entryActionNote(trade) {
+      if (!this.entryResting(trade) || this.canCancelEntry(trade)) return '';
+      return trade.entry_pending
+        ? 'Dashboard cancel is off because the bot does not report this order’s fill amount. Manage the order on the exchange or let the bot’s timeout cancel it.'
+        : 'Dashboard cancel is off because part of this entry has filled. Manage the rest of the order on the exchange or let the bot’s timeout cancel it; Close position returns once no entry order rests.';
+    },
+    // The resting entry order as text rows. Times are UTC like the trade window.
+    entryOrderRows(trade) {
+      const e = trade.entry;
+      if (!this.entryResting(trade)) return [];
+      const utc = ms => { const d = new Date(ms); return (d.getUTCMonth() + 1) + '-' + String(d.getUTCDate()).padStart(2, '0') + ' ' + String(d.getUTCHours()).padStart(2, '0') + ':' + String(d.getUTCMinutes()).padStart(2, '0') + ' UTC'; };
+      const span = ms => this.fmtMin(Math.max(1, Math.round(ms / 60000)));
+      const qty = n => n == null ? '—' : String(Number(Number(n).toPrecision(8)));
+      const now = toMs(trade.close_ts);
+      const kind = (e.order_type ? e.order_type.charAt(0).toUpperCase() + e.order_type.slice(1) + ' ' : '') + (e.side || (trade.is_short ? 'sell' : 'buy'));
+      let order = kind + ' ' + qty(e.requested) + ' at ' + this.fmtRate(e.price);
+      if (e.state === 'partial') order += ' · ' + qty(e.filled) + ' of ' + qty(e.requested) + ' filled';
+      const rows = [{ label: 'Order', text: order }];
+      if (e.placed_ts) rows.push({ label: 'Resting', text: 'Since ' + utc(e.placed_ts) + ' (' + span(now - e.placed_ts) + ')' });
+      if (e.expires_ts) rows.push({ label: 'Expires', text: e.expires_ts > now ? utc(e.expires_ts) + ' (in ' + span(e.expires_ts - now) + ') · bot cancels it if still unfilled' : 'Timeout passed · waiting for the bot to cancel it' });
+      else rows.push({ label: 'Expires', text: 'Timeout not reported by the bot' });
+      const current = Number(trade.close_rate);
+      if (current > 0 && e.price > 0) rows.push({ label: 'Price', text: 'Now ' + this.fmtRate(current) + ' · the limit is ' + this.fmtPctSigned((e.price / current - 1) * 100) + ' from here' });
+      if (e.state === 'pending') rows.push({ label: 'Stop', text: 'Not active until the entry fills' + (trade.posted_stop ? ' · signal stop ' + this.fmtRate(trade.posted_stop) + ' applies after the fill' : '') });
       return rows;
     },
     _tradeKey(trade) { return trade.bot_key + ':' + trade.pair + ':' + trade.open_ts; },
