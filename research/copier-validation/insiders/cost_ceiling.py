@@ -21,7 +21,8 @@ conservative-manager rules the plan demands:
      max-take / trailing rule would behave.
 
 Cost model (Binance USDT-M futures, conservative-realistic):
-  - taker fee 0.05% / maker fee 0.02% per side (VIP0).
+  - taker fee 0.05% / maker fee 0.02% per side (VIP0), imported from the shared
+    venue cost model ft_userdata/analysis/costs.py with product "perp".
   - slippage 0.05% per MARKET fill (entry if market; every exit is market).
   - total exit turnover = 1.0 notional regardless of how many partials the
     `manage` model books (partials split one notional), so exit cost is charged
@@ -65,9 +66,15 @@ def _binance_first(sym: str, prefer: str = "binance"):
 harness.candles = _binance_first
 
 # ── cost model knobs ─────────────────────────────────────────────────────────
-TAKER = 0.0005      # 0.05% per side
-MAKER = 0.0002      # 0.02% per side
-SLIP  = 0.0005      # 0.05% per market fill
+# Fees come from the shared venue cost model (issue #1), keyed on venue AND
+# product: this study models Binance USDT-M perpetual futures, base tier (VIP0).
+# Binance SPOT costs 5x these maker/taker rates, so the product is explicit.
+sys.path.insert(0, str(HERE.parents[2]))
+from ft_userdata.analysis.costs import DEFAULT_SLIPPAGE_BPS, fee_fraction  # noqa: E402
+
+TAKER = fee_fraction("binance", "perp", "taker")   # 0.05% per side
+MAKER = fee_fraction("binance", "perp", "maker")   # 0.02% per side
+SLIP  = DEFAULT_SLIPPAGE_BPS / 1e4                  # 0.05% per market fill (prior)
 FUND  = 0.0000      # base = no funding; flip on for sensitivity
 
 RISK_PCT = 5.0      # same linear translation the doc uses (R x 5%)

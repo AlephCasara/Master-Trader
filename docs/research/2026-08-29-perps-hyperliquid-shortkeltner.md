@@ -126,6 +126,7 @@ On 36 USDC of notional per position:
 
 - **Fees.** Round-trip taker at 0.045% per side costs 0.032 USDC (0.18% of margin); round-trip maker at 0.015% costs 0.011 USDC. The live configuration posts limit orders but prices them at the opposite side of the book, so taker execution should be assumed.
 - **Funding.** Own computation over the trailing sixty days of Hyperliquid hourly funding (n = 500 observations per instrument, retrieved 29 August 2026) gives mean rates of **+0.00119%/hour for BTC (10.4% APR), +0.00121% for ETH (10.6% APR), and +0.00098% for SOL (8.6% APR)**, positive in 99%, 100%, and 92% of hours respectively. Positive funding is paid *to* shorts. Over a full 36-hour hold this yields **+0.043% of notional for BTC (≈ +0.016 USDC)**.
+  *Erratum (2026-10-02, issue #1):* these means are the **first** 500 hourly settlements after 2026-06-30 (Hyperliquid caps a `fundingHistory` page at 500 records), i.e. 30 June to 21 July, not the trailing sixty days. The full sixty days to 29 August give +0.00100%/h BTC (8.8% APR, 93% positive), +0.00102%/h ETH (9.0%, 95%) and +0.00083%/h SOL (7.2%, 86%), from the paginated download used by `ft_userdata/analysis/costs.py`. The §9 conclusion is unchanged: the ~6.5%/yr strategy ceiling is still below passive carry.
 
 Funding is thus a genuine but economically trivial tailwind at this holding period — roughly half the round-trip taker fee, and 1.4% of the 1.08 USDC target. The often-cited "shorts get paid on Hyperliquid" advantage is real for carry strategies measured in weeks; it is noise for a 36-hour directional trade.
 
@@ -298,6 +299,7 @@ Relaxing the gate (variants V1–V3) would raise frequency, but selecting a vari
 1. **Proxy data.** Binance USDT klines substitute for Hyperliquid USDC candles. Price tracking is close for majors; **volume distributions are not comparable**, and volume is a binding filter. Signal counts on Hyperliquid will differ, plausibly materially.
 2. **No 1-minute detail.** Path-dependent outcomes are modelled at hourly resolution, which the program's own standards identify as systematically misleading. All §6.3 outcomes are indicative only.
 3. **No cost model in path analysis.** Fees, funding, slippage, and partial fills are excluded from the first-touch scoring.
+   A shared venue cost model now exists (`ft_userdata/analysis/costs.py`, issue #1); the §6.3 outcomes have not yet been re-scored through it.
 4. **Sample specificity.** Twenty months spanning one major cycle turn; the gate's 18.2% open rate is not a stationary parameter.
 5. **N = 4.** No inference about profitability is drawn, and none should be.
 6. **Single-source claims.** Hyperliquid's market-share, volume, and revenue figures derive from a single interested source (Pantera Capital, an investor in the ecosystem) and are not independently verified here.
