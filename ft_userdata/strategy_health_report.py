@@ -27,7 +27,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-import requests
 from requests.auth import HTTPBasicAuth
 
 
@@ -48,6 +47,7 @@ def _load_dotenv() -> None:
 _load_dotenv()
 
 from api_utils import api_get as _api_get_with_retry
+from webhook_notify import send_status
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -101,7 +101,6 @@ AUTH = HTTPBasicAuth(API_USER, API_PASS)
 # There is deliberately no capital constant here. The portfolio basis is read
 # from each live exchange account's /balance at report time; see
 # compute_capital_basis() and issue #60.
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "http://localhost:8088/webhooks/freqtrade")
 FT_DIR = Path(os.environ.get("FT_DIR", str(Path.home() / "ft_userdata")))
 DB_DIR = FT_DIR / "user_data"
 STATE_FILE = FT_DIR / "health_report_state.json"
@@ -1256,20 +1255,7 @@ def format_telegram_report(bot_metrics: list[dict], portfolio: dict, trends: dic
 # ---------------------------------------------------------------------------
 
 def send_telegram(message: str) -> bool:
-    try:
-        # trade-webhook (FastAPI) expects JSON body; the old form-encoded
-        # `data=` path was a Mac claude-assistant convention from before
-        # the migration. Sending as JSON now → 200 OK + Telegram delivery.
-        payload = {"type": "status", "status": message, "bot_name": "health-report"}
-        resp = requests.post(WEBHOOK_URL, json=payload, timeout=10)
-        if resp.status_code in (200, 201, 204):
-            log.info("Report sent to Telegram")
-            return True
-        log.warning("Webhook returned HTTP %d", resp.status_code)
-        return False
-    except Exception as e:
-        log.error("Failed to send report: %s", e)
-        return False
+    return send_status(message, bot_name="health-report")
 
 
 # ---------------------------------------------------------------------------

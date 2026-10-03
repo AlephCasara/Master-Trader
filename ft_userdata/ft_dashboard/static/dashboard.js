@@ -10,18 +10,9 @@
 
 // Palette mirrors styles.css tokens so charts match the page.
 const COLORS = {
-  surface:  '#ffffff',
-  surface2: '#f6f8fa',
-  text:     '#12171f',
-  text2:    '#56606e',
-  text3:    '#61717f',
-  border:   '#dce3e9',
-  hairline: '#edf1f4',
-  accent:   '#0e87a3',
-  pos:      '#0a8f5b',
-  neg:      '#d2473a',
-  warn:     '#b07a16',
-  info:     '#0e87a3',
+  text3:  '--chart-legacy',
+  accent: '--chart-equity',
+  neg:    '--chart-drawdown',
 };
 
 // Bug fix B3: coerce timestamps — Freqtrade returns ms but guard against seconds
@@ -61,6 +52,11 @@ function dash() {
     _tradeTfOverride: {},
     _tradeScale: {},
     expandedTrade: null,
+    themePreference: window.masterTheme?.preference() || 'system',
+    cycleTheme() {
+      const next = {light: 'dark', dark: 'system', system: 'light'}[this.themePreference] || 'light';
+      window.masterTheme?.set(next); this.themePreference = next;
+    },
     closeTrade: null, closeBusy: false, closeMessage: '', closeUser: '', closePassword: '', closeRequestId: null,
     showClose(trade) {
       this.closeTrade = {...trade}; this.closeMessage = ''; this.closePassword = '';

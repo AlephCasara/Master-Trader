@@ -29,11 +29,11 @@ python3 -m venv .venv
 ```
 
 That is the root suite alone. [Clone and run the tests](README.md#1-clone-and-run-the-tests)
-lists all six Python suites in the order CI runs them. Neither block covers the
+lists every Python suite in the order CI runs them. Neither block covers the
 frontend gates below, so a green local run is not a green CI run.
 
-CI uses Python 3.13 and runs six Python suites separately: root, both receivers,
-dashboard, gateway, and the copier classifiers and observer under `killers_bot/tests/`.
+CI uses Python 3.13 and runs each suite in that README list as its own step
+(`.github/workflows/tests.yml`; a root test fails when the two disagree).
 It then runs four gates in `ft_userdata/ft_dashboard/frontend`: `npm ci`;
 `npm run typecheck` and `npm run build` followed by
 `git diff --exit-code -- ../static/price-chart.js`; a Chromium install; and `npm test`.

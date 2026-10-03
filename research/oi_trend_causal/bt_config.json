@@ -1,0 +1,74 @@
+{
+  "dry_run": true,
+  "cancel_open_orders_on_exit": true,
+  "trading_mode": "spot",
+  "margin_mode": "",
+  "stake_currency": "USDT",
+  "stake_amount": 10,
+  "tradable_balance_ratio": 0.99,
+  "max_open_trades": 1,
+  "amount_reserve_percent": 0.05,
+  "unfilledtimeout": {
+    "entry": 10,
+    "exit": 10,
+    "exit_timeout_count": 0,
+    "unit": "minutes"
+  },
+  "order_types": {
+    "entry": "limit",
+    "exit": "limit",
+    "emergency_exit": "market",
+    "force_exit": "market",
+    "force_entry": "market",
+    "stoploss": "limit",
+    "stoploss_on_exchange": false,
+    "stoploss_on_exchange_interval": 60,
+    "stoploss_on_exchange_limit_ratio": 0.98
+  },
+  "entry_pricing": {
+    "price_side": "same",
+    "use_order_book": true,
+    "order_book_top": 1,
+    "price_last_balance": 0.0,
+    "check_depth_of_market": {
+      "enabled": false,
+      "bids_to_ask_delta": 1
+    }
+  },
+  "exit_pricing": {
+    "price_side": "same",
+    "use_order_book": true,
+    "order_book_top": 1
+  },
+  "exchange": {
+    "name": "binance",
+    "key": "",
+    "secret": "",
+    "ccxt_config": {},
+    "ccxt_async_config": {},
+    "pair_whitelist": [
+      "ETH/USDT",
+      "SOL/USDT",
+      "BNB/USDT",
+      "SUI/USDT",
+      "XRP/USDT",
+      "ADA/USDT",
+      "AVAX/USDT",
+      "LINK/USDT"
+    ],
+    "pair_blacklist": [
+      ".*BULL/USDT",
+      ".*BEAR/USDT",
+      ".*UP/USDT",
+      ".*DOWN/USDT"
+    ]
+  },
+  "pairlists": [
+    {
+      "method": "StaticPairList"
+    }
+  ],
+  "dry_run_wallet": 1000,
+  "_comment": "OITrendPullbackV1.live.json minus webhook/api/telegram/db; backtest-only (issue #18). Fees come from --fee on the command line. timeframe 1h = the strategy's own (required with --strategy-list).",
+  "timeframe": "1h"
+}

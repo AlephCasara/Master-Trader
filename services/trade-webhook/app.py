@@ -41,24 +41,40 @@ OPS_BOT_TOKEN = os.environ.get("OPS_BOT_TOKEN", "").strip()
 OPS_BOT_CHAT_ID = os.environ.get("OPS_BOT_CHAT_ID", "").strip()
 TELEGRAM_TIMEOUT = float(os.environ.get("TELEGRAM_TIMEOUT", "10"))
 
-# Shared secret for POST /test/notify (#59). That route relays caller-chosen
-# text straight to the ops Telegram chat, and this container sits on
-# dokploy-network next to ~25 unrelated applications. Its only callers are
-# killers-receiver and insiders-receiver, which send the value as the
-# X-Notify-Token header when TRADE_WEBHOOK_NOTIFY_TOKEN is set on them.
+# Shared secret for POST /test/notify (#59) and POST /freqtrade/event (#97).
+# Both routes put caller-chosen text in the ops Telegram chat. Callers send it
+# as the X-Notify-Token header: killers-receiver, insiders-receiver and its
+# risk warden (/test/notify), the metrics-exporter circuit breaker and the
+# ft_userdata report scripts (/freqtrade/event).
 #
-# Rollout stage 1 (this code): optional. Unset keeps the legacy open route so
-# the token can be deployed to the receivers and this service in any order;
-# startup logs a WARNING while it is unset.
-# Stage 2 (after the token is deployed everywhere): make it mandatory — refuse
-# to start without it, like killers-receiver's KILLERS_INGRESS_TOKEN.
+# /test/notify: optional. Unset keeps the legacy open route so the token can be
+# deployed to the receivers and this service in any order; startup logs a
+# WARNING while it is unset. Set, a missing or wrong header is a 401.
+# Next stage (after the token is deployed everywhere): make it mandatory —
+# refuse to start without it, like killers-receiver's KILLERS_INGRESS_TOKEN.
 #
-# /freqtrade/event and /healthz are deliberately NOT covered: Freqtrade's
-# webhook config cannot be updated in the same change.
+# /healthz stays open: it is the container's own healthcheck.
 NOTIFY_TOKEN_HEADER = "X-Notify-Token"
 # Same floor as killers-receiver's _MIN_INGRESS_TOKEN_LEN: `openssl rand -hex 24`
 # (48 chars) clears it. Stage 1 only warns; stage 2 should refuse to start.
 _MIN_NOTIFY_TOKEN_LEN = 24
+
+# /freqtrade/event (#97). Freqtrade's webhook cannot send custom headers
+# (2026.7 reads only url/format/retries/retry_delay/timeout), and a token in
+# the URL would be written to every bot's log by the first failed call
+# ("Could not call webhook url. Exception: 401 ... for url: ..."). So the
+# bots carry the same secret in the JSON body as `webhook_token`, injected
+# into their webhook templates by FREQTRADE__WEBHOOK__* env vars
+# (ft_userdata/docker-compose.prod.yml). The field is removed from every
+# payload before anything is stored or forwarded, authenticated or not.
+EVENT_TOKEN_FIELD = "webhook_token"
+# TRADE_WEBHOOK_EVENT_AUTH:
+#   monitor (default) — accept every event. With a token configured, each
+#     event that does not carry it logs a WARNING naming the bot and source,
+#     so a deployment can be checked before it is enforced.
+#   enforce — a missing or wrong token is a 401: nothing is stored, nothing
+#     is sent. Refuses to start without TRADE_WEBHOOK_NOTIFY_TOKEN.
+_EVENT_AUTH_MODES = ("monitor", "enforce")
 
 
 def _load_notify_token() -> str:
@@ -82,7 +98,39 @@ def _load_notify_token() -> str:
 
 NOTIFY_TOKEN = _load_notify_token()
 
+
+def _load_event_auth(token: str) -> str:
+    mode = os.environ.get("TRADE_WEBHOOK_EVENT_AUTH", "").strip().lower() or "monitor"
+    if mode not in _EVENT_AUTH_MODES:
+        # A typo must not quietly leave the route open: fail loud instead.
+        raise RuntimeError(
+            f"TRADE_WEBHOOK_EVENT_AUTH must be one of {_EVENT_AUTH_MODES}, got {mode!r}"
+        )
+    if mode == "enforce" and not token:
+        raise RuntimeError(
+            "TRADE_WEBHOOK_EVENT_AUTH=enforce needs TRADE_WEBHOOK_NOTIFY_TOKEN"
+        )
+    if mode == "monitor":
+        log.warning(
+            "POST /freqtrade/event accepts unauthenticated events "
+            "(TRADE_WEBHOOK_EVENT_AUTH=monitor)%s",
+            "; events without the token are logged" if token else "",
+        )
+    return mode
+
+
+EVENT_AUTH = _load_event_auth(NOTIFY_TOKEN)
+
 app = FastAPI(title="elder-brain trade-webhook")
+
+
+def _token_matches(supplied: Any) -> bool:
+    # compare_digest on bytes: str inputs raise TypeError on non-ASCII. Only a
+    # non-empty string can match; Freqtrade turns a numeric-looking env value
+    # into a JSON number, which is rejected rather than coerced.
+    if not NOTIFY_TOKEN or not isinstance(supplied, str) or not supplied:
+        return False
+    return hmac.compare_digest(supplied.encode("utf-8"), NOTIFY_TOKEN.encode("utf-8"))
 
 
 def now_iso() -> str:
@@ -269,13 +317,31 @@ async def freqtrade_event(request: Request) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="payload must be a JSON object")
 
+    # Removed before anything else, so the secret never reaches the lake,
+    # the Telegram summary or a log line — whether or not it is valid.
+    body_token = payload.pop(EVENT_TOKEN_FIELD, None)
+    header_token = request.headers.get(NOTIFY_TOKEN_HEADER)
+    source = request.client.host if request.client else None
+
     bot = (payload.get("bot_name") or payload.get("strategy") or "unknown").strip()
     bot = "".join(c if c.isalnum() or c in "-_" else "_" for c in bot)[:64] or "unknown"
 
+    if not (_token_matches(header_token) or _token_matches(body_token)):
+        why = "invalid" if (header_token or body_token) else "missing"
+        if EVENT_AUTH == "enforce":
+            log.warning("rejected POST /freqtrade/event bot=%s from=%s: %s token",
+                        bot, source, why)
+            raise HTTPException(status_code=401, detail="invalid notify token")
+        if NOTIFY_TOKEN:
+            log.warning("unauthenticated POST /freqtrade/event bot=%s from=%s: %s token "
+                        "(accepted: TRADE_WEBHOOK_EVENT_AUTH=monitor)", bot, source, why)
+
+    # Server fields last: a payload cannot overwrite when or from where the
+    # event was received.
     enriched = {
-        "ts": now_iso(),
-        "received_from": request.client.host if request.client else None,
         **payload,
+        "ts": now_iso(),
+        "received_from": source,
     }
     try:
         append_event(bot, enriched)

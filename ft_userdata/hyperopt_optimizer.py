@@ -36,7 +36,6 @@ BASE_BACKTEST_CONFIG = FT_DIR / "user_data" / "config-backtest.json"
 # Must sit under user_data/: that is the only path bind-mounted into the backtest
 # container, so a config written anywhere else is invisible to it.
 VALIDATION_CONFIG_DIR = FT_DIR / "user_data" / "hyperopt_results"
-WEBHOOK_URL = "http://localhost:8088/webhooks/freqtrade"
 
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
 PROPOSALS_DIR.mkdir(parents=True, exist_ok=True)
@@ -446,14 +445,8 @@ def format_report(proposals: list[dict]) -> str:
 
 
 def send_telegram(message: str) -> bool:
-    import requests as req
-    try:
-        payload = {"type": "status", "status": message}
-        resp = req.post(WEBHOOK_URL, data=payload, timeout=10)
-        return resp.status_code in (200, 201, 204)
-    except Exception as e:
-        log.error("Failed to send report: %s", e)
-        return False
+    from webhook_notify import send_status
+    return send_status(message, bot_name="hyperopt-optimizer")
 
 
 # ---------------------------------------------------------------------------
