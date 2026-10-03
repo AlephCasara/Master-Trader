@@ -13,7 +13,7 @@
         integrity="sha384-iZD2X8o1Zdq0HR5H/7oa8W30WS4No+zWCKUPD7fHRay9I1Gf+C4F8sVmw7zec1wW"
         crossorigin="anonymous"></script>
 
-<link rel="stylesheet" href="/static/workspace.css?v=44">
+<link rel="stylesheet" href="/static/workspace.css?v=45">
 <script defer src="/static/price-chart.js?v=44"></script>
 </head>
 <body x-data="dash()" x-init="boot()" @keydown.escape.window="expandedTrade=null; $nextTick(() => _scheduleChartResize())">
@@ -827,7 +827,7 @@
                     x-text="trade.is_open ? 'OPEN' : (trade.exit_reason || '—')">—</span>
             </div>
           </div>
-          <div class="position-context"><span x-text="trade.bot_name"></span><span x-show="trade.dry_run">Paper trading</span><span x-text="trade.is_short?'Short':'Long'"></span><span x-show="trade.tps_total" x-text="trade.tps_hit+' / '+trade.tps_total+' targets filled'"></span><span x-show="trade.booked_pct>0" x-text="Math.round(trade.booked_pct)+'% realized'"></span></div>
+          <div class="position-context"><span x-text="trade.bot_name"></span><span x-show="trade.dry_run">Paper trading</span><span x-text="trade.is_short?'Short':'Long'"></span><span x-show="trade.leverage>1" x-text="fmtLeverage(trade.leverage)+' leverage · P&amp;L % is on margin'"></span><span x-show="priceMovePct(trade)!=null" title="Price change from entry, before leverage and fees" x-text="'Price '+fmtPctSigned(priceMovePct(trade))+' from entry'"></span><span x-show="trade.tps_total" x-text="trade.tps_hit+' / '+trade.tps_total+' targets filled'"></span><span x-show="trade.booked_pct>0" x-text="Math.round(trade.booked_pct)+'% realized'"></span></div>
           <div class="trade-card-detail">
             <span class="trade-entry-price" title="Average filled entry price · solid blue line on chart">Entry price <strong x-text="(trade.open_rate||0).toPrecision(5)">—</strong></span>
             <span class="sep">→</span>
@@ -855,7 +855,14 @@
           <div class="exit-levels" x-show="trade.is_open">
             <span x-show="trade.stop_rate" class="exit-stop" x-text="'Bot stop '+fmtRate(trade.stop_rate)"></span>
             <template x-for="(level,i) in (trade.exit_levels||[])" :key="i"><span :class="'exit-'+level.state" x-text="level.label+' '+fmtRate(level.price)+' · '+level.state"></span></template>
-            <span x-show="!(trade.exit_levels||[]).length">No TP order reported · strategy may exit dynamically</span>
+            <span x-show="!(trade.exit_levels||[]).length" x-text="exitPolicyRows(trade).length?'No TP order reported':'No TP order reported · strategy may exit dynamically'"></span>
+          </div>
+          <div class="exit-policy" x-show="exitPolicyRows(trade).length" x-cloak>
+            <p class="exit-policy-head">Strategy exits · the bot checks these against price; they are not resting exchange orders</p>
+            <dl>
+              <template x-for="(row,i) in exitPolicyRows(trade)" :key="i"><div :title="row.reason?'Exit reason: '+row.reason:null"><dt x-text="row.label"></dt><dd x-text="row.text"></dd></div></template>
+            </dl>
+            <p class="exit-policy-note" x-show="(trade.exit_levels||[]).length">TP numbers are the source signal's own target numbers. The receiver may place only some targets, merging or skipping those it cannot place separately, so numbers can skip.</p>
           </div>
           <div class="trade-chart-source">
             <span x-text="venueLabel(raw.bots[trade.bot_key])"></span>
@@ -1140,7 +1147,7 @@
   // expose toMs so Alpine inline expressions can use it
   function toMs(ts) { return !ts ? 0 : ts > 1e12 ? ts : ts * 1000; }
 </script>
-<script src="/static/dashboard.js?v=44"></script>
+<script src="/static/dashboard.js?v=45"></script>
 <div class="chart-attribution"><a href="https://www.tradingview.com/" target="_blank" rel="noopener">Charts by TradingView</a> · <a href="/static/CHART-NOTICE.txt">Notice</a> · <a href="/static/CHART-LICENSE.txt">License</a></div>
 </body>
 </html>

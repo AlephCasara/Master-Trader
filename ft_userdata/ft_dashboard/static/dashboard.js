@@ -1023,6 +1023,8 @@ function dash() {
             tps_total: t.tps_total ?? null,
             tps_hit: t.tps_hit ?? null,
             next_tp: t.next_tp ?? null,
+            leverage: t.leverage ?? null,
+            exit_policy: b.exit_policy ?? null,
           });
         }
       }
@@ -1071,6 +1073,71 @@ function dash() {
       const hh = String(open.getUTCHours()).padStart(2, '0') + ':' + String(open.getUTCMinutes()).padStart(2, '0');
       const durStr = dur ? (dur < 60 ? dur + 'm' : (dur / 60).toFixed(1) + 'h') : '—';
       return `${day} ${hh} · ${durStr}`;
+    },
+    // Unlevered price change from entry to the current (or exit) price. The
+    // card's P&L % is on stake, so it also carries leverage and fees.
+    priceMovePct(trade) {
+      const entry = Number(trade.open_rate), price = Number(trade.close_rate);
+      return entry > 0 && price > 0 ? (price / entry - 1) * 100 : null;
+    },
+    fmtLeverage(x) { return Number(x).toFixed(Number.isInteger(Number(x)) ? 0 : 1) + '×'; },
+    // Strategy-managed exits for an open position as text rows: the bot's
+    // reported ROI table and trailing settings plus the strategy's declared
+    // time/signal rules. The bot evaluates these against price; none of them
+    // is a resting exchange order. Unreported settings say so, never "off".
+    exitPolicyRows(trade) {
+      const policy = trade.exit_policy;
+      if (!trade.is_open || !policy) return [];
+      const openMs = toMs(trade.open_ts);
+      const age = openMs ? Math.floor((toMs(trade.close_ts) - openMs) / 60000) : null;
+      const pct = ratio => this.fmtPctSigned(ratio * 100);
+      const step = minutes => minutes % 60 === 0 ? (minutes / 60) + 'h' : minutes + 'm';
+      const until = minutes => 'in ' + this.fmtMin(Math.max(1, Math.ceil(minutes)));
+      const rows = [];
+      const roi = policy.roi;
+      if (roi == null) rows.push({ label: 'ROI', text: 'Not reported by the bot' });
+      else if (!roi.length) rows.push({ label: 'ROI', text: 'No ROI table' });
+      else if (roi.every(([, ratio]) => ratio >= 10)) rows.push({ label: 'ROI', text: 'Off · table set to ' + pct(Math.min(...roi.map(([, ratio]) => ratio))) });
+      else if (age != null) {
+        const current = [...roi].reverse().find(([minutes]) => minutes <= age);
+        const next = roi.find(([minutes]) => minutes > age);
+        let text = current ? 'Exits above ' + pct(current[1]) + ' P&L now' : 'No ROI step yet';
+        if (next) text += ' · ' + pct(next[1]) + ' from ' + step(next[0]) + ' (' + until(next[0] - age) + ')';
+        else if (current && current[0] > 0) text += ' · final step since ' + step(current[0]);
+        rows.push({ label: 'ROI', text });
+      }
+      const trailing = policy.trailing;
+      if (trailing == null) rows.push({ label: 'Trailing', text: 'Not reported by the bot' });
+      else if (!trailing.enabled) rows.push({ label: 'Trailing', text: 'Off' });
+      else {
+        // Freqtrade trails at ratio / leverage from the best price seen.
+        const leverage = trade.leverage > 1 ? trade.leverage : 1;
+        const price = ratio => this.fmtPct(Math.abs(ratio) * 100 / leverage);
+        const away = ratio => price(ratio) + (trade.is_short ? ' above the lowest price' : ' below the highest price');
+        const distance = trailing.positive ?? policy.stoploss;
+        let text;
+        if (distance == null) text = 'On · distance not reported';
+        else if (trailing.only_offset_reached) text = 'Starts once P&L reaches ' + pct(trailing.offset) + ', then trails ' + away(distance);
+        else if (trailing.positive != null && policy.stoploss != null) text = 'Trails ' + away(policy.stoploss) + '; ' + price(trailing.positive) + ' once P&L exceeds ' + pct(trailing.offset);
+        else text = 'Trails ' + away(distance);
+        rows.push({ label: 'Trailing', text });
+      }
+      for (const rule of policy.rules || []) {
+        if (rule.kind === 'time') {
+          let text = 'Exits after ' + rule.after_hours + 'h';
+          if (rule.profit_below === 0) text += ' if P&L is negative';
+          else if (rule.profit_below != null) text += ' if P&L is below ' + pct(rule.profit_below);
+          if (age != null) {
+            const left = rule.after_hours * 60 - age;
+            text += left > 0 ? ' (' + until(left) + ')' : ' (in effect now)';
+          }
+          rows.push({ label: 'Time', text, reason: rule.reason });
+        } else if (rule.kind === 'signal') {
+          rows.push({ label: 'Signal', text: 'Exits when ' + rule.text, reason: rule.reason });
+        }
+      }
+      if (policy.receiver_driven) rows.push({ label: 'Receiver', text: 'Target exits and stop moves come from the source signal; the strategy adds no time or signal exit' });
+      return rows;
     },
     _tradeKey(trade) { return trade.bot_key + ':' + trade.pair + ':' + trade.open_ts; },
     // DOM id for a trade's chart — includes a sanitized pair so two trades a

@@ -13,6 +13,27 @@ const fs=require('fs');const root=require('path').join(__dirname,'../../');const
  const sections=await page.locator('.portfolio-analysis>.grid').evaluateAll(nodes=>nodes.map(el=>({top:el.getBoundingClientRect().top,bottom:el.getBoundingClientRect().bottom})));
  for(let i=1;i<sections.length;i++)assert(sections[i].top-sections[i-1].bottom>=20,'Portfolio sections must have a visible gutter');
  await page.getByRole('button',{name:/^positions/}).first().click();await page.waitForTimeout(1000);
+ // Strategy-managed exits: rendered from the bot's reported policy, never as orders.
+ const policyCard=page.locator('.trade-card',{hasText:'TRX/USDT'});
+ assert.match(await policyCard.locator('.exit-policy-head').textContent(),/not resting exchange orders/);
+ assert.deepEqual(await policyCard.locator('.exit-policy dl>div').evaluateAll(rows=>rows.map(row=>[row.querySelector('dt').textContent,row.querySelector('dd').textContent,row.title])),[
+  ['ROI','Exits above +2.00% P&L now · final step since 24h',''],['Trailing','Off',''],
+  ['Time','Exits after 96h if P&L is negative (in effect now)','Exit reason: v2_failed_reversion'],
+  ['Time','Exits after 168h if P&L is below +1.00% (in 1.0d)','Exit reason: v2_expired_episode']]);
+ const hlContext=await page.locator('.trade-card',{hasText:'LINK/USDC:USDC'}).locator('.position-context').innerText();
+ assert.match(hlContext,/3× leverage · P&L % is on margin/);assert.match(hlContext,/Price \+8\.00% from entry/);
+ const policyRows=await page.evaluate(()=>{const d=Alpine.$data(document.body);const now=Date.UTC(2026,9,1);const at=min=>({is_open:true,open_ts:now-min*60000,close_ts:now,open_rate:100,close_rate:101});
+  const rows=(trade,policy)=>d.exitPolicyRows({...trade,exit_policy:policy}).map(r=>r.label+': '+r.text);
+  return {young:rows(at(100),{roi:[[0,.08],[360,.05]],trailing:{enabled:false},rules:[{kind:'time',after_hours:36,profit_below:null,reason:'time_exit_36h'},{kind:'signal',text:'RSI(14) is below 30',reason:'x'}]}),
+   shortOffset:rows({...at(10),is_short:true,leverage:3},{roi:[[0,100]],stoploss:-.06,trailing:{enabled:true,positive:.03,offset:.05,only_offset_reached:true},rules:[],receiver_driven:true}),
+   fromEntry:rows({...at(10),leverage:3},{roi:[],stoploss:-.06,trailing:{enabled:true,positive:.03,offset:.05,only_offset_reached:false},rules:[]}),
+   unreported:rows(at(10),{roi:null,stoploss:null,trailing:null,rules:[]}),
+   closed:rows({...at(10),is_open:false},{roi:[[0,.08]],trailing:{enabled:false},rules:[]})};});
+ assert.deepEqual(policyRows,{
+  young:['ROI: Exits above +8.00% P&L now · +5.00% from 6h (in 4.3h)','Trailing: Off','Time: Exits after 36h (in 1.4d)','Signal: Exits when RSI(14) is below 30'],
+  shortOffset:['ROI: Off · table set to +10000.00%','Trailing: Starts once P&L reaches +5.00%, then trails 1.00% above the lowest price','Receiver: Target exits and stop moves come from the source signal; the strategy adds no time or signal exit'],
+  fromEntry:['ROI: No ROI table','Trailing: Trails 2.00% below the highest price; 1.00% once P&L exceeds +5.00%'],
+  unreported:['ROI: Not reported by the bot','Trailing: Not reported by the bot'],closed:[]});
  await page.getByRole('button',{name:'Close position…',exact:true}).first().click();
  if(process.env.SCREENSHOTS){fs.mkdirSync(process.env.SCREENSHOTS,{recursive:true});for(const width of [1440,390]){await page.setViewportSize({width,height:1000});await page.screenshot({path:process.env.SCREENSHOTS+'/close-'+width+'.png'});}await page.setViewportSize({width:1440,height:1000});}
  await page.getByLabel('Bot API username').fill('operator');await page.getByLabel('Bot API password').fill('synthetic');

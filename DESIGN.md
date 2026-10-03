@@ -151,6 +151,17 @@ pill shapes.
   without forcing candle compression. Active levels use solid lines; other
   levels use dashed lines. Refreshes preserve the visible logical range when
   the timeframe is unchanged; a new timeframe starts near the latest 90 bars.
+- **Strategy exits:** open position cards list strategy-managed exits below
+  the exit levels, under a heading that says the bot checks them against price
+  and that they are not resting exchange orders. ROI shows the current
+  threshold and the next age-based step with time remaining. Trailing shows its
+  activation P&L and its price distance, which is the ratio divided by leverage.
+  Time and signal rows come from the strategy's declared rules, and each one
+  carries its exit reason as a tooltip. A setting the bot does not report
+  reads "Not reported by the bot", never "Off". Cards with receiver targets
+  explain that TP numbers are the source signal's own and can skip. The
+  context line shows leverage, says that P&L % is on margin, and gives the
+  unlevered price change from entry.
 - **Expand chart:** expand one card within the grid; Restore grid or Escape
   returns to the comparison layout. This is an inline expansion, not a modal.
 - **Controls:** compact controls have a 36px minimum height and 8px/12px padding.
