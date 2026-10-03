@@ -3,7 +3,8 @@ import {themeColor, THEME_CHANGE} from './theme';
 type Level={price:number;label:string;state?:string};
 type Palette={bg:string;text:string;grid:string;up:string;down:string;entry:string;pending:string;level:string};
 const palette=():Palette=>({bg:themeColor('--chart-bg'),text:themeColor('--chart-text'),grid:themeColor('--chart-grid'),up:themeColor('--chart-up'),down:themeColor('--chart-down'),entry:themeColor('--chart-entry'),pending:themeColor('--chart-pending'),level:themeColor('--chart-level')});
-type Trade={open_ts?:number|string;is_short?:boolean;open_rate:number;close_rate:number;stop_rate?:number;is_open?:boolean;exit_levels?:Level[]};
+// entry_pending: the entry order rests unfilled, so open_rate is a limit price, not a fill.
+type Trade={open_ts?:number|string;is_short?:boolean;open_rate:number;close_rate:number;stop_rate?:number;is_open?:boolean;entry_pending?:boolean;exit_levels?:Level[]};
 class PriceChart {
   private chart; private series; private lines:IPriceLine[]=[]; private timeframe=''; private dead=false;
   private exits:Level[]=[]; private mode='price'; private markers; private entryIndex=-1; private colors:Palette;
@@ -28,7 +29,7 @@ class PriceChart {
     if(!data.length)return;
     const previous=this.chart.timeScale().getVisibleLogicalRange();
     this.mode=mode;
-    this.exits=[{price:trade.open_rate,label:'Entry price',state:'entry'},{price:trade.close_rate,label:trade.is_open?'Current':'Exit'},...(trade.is_open && trade.stop_rate?[{price:trade.stop_rate,label:trade.is_open?'Bot stop':'Recorded stop',state:'stop'}]:[]),...(trade.exit_levels||[])].filter(x=>Number.isFinite(x.price)&&x.price>0);
+    this.exits=[trade.entry_pending?{price:trade.open_rate,label:'Entry limit',state:'pending'}:{price:trade.open_rate,label:'Entry price',state:'entry'},{price:trade.close_rate,label:trade.is_open?'Current':'Exit'},...(trade.is_open && trade.stop_rate?[{price:trade.stop_rate,label:trade.is_open?'Bot stop':'Recorded stop',state:'stop'}]:[]),...(trade.exit_levels||[])].filter(x=>Number.isFinite(x.price)&&x.price>0);
     const reference=data[data.length-1].close;
     const precision=Math.min(10,Math.max(2,4-Math.floor(Math.log10(reference))));
     this.series.applyOptions({priceFormat:{type:'price',precision,minMove:10**-precision}});
@@ -40,7 +41,7 @@ class PriceChart {
     const opened=raw==null?NaN:Number.isFinite(numeric)?(numeric<1e12?numeric*1000:numeric):Date.parse(String(raw));
     const seconds=opened/1000;
     const duration=({"5m":300,"15m":900,"1h":3600,"4h":14400} as Record<string,number>)[tf];
-    const candle=duration&&Number.isFinite(seconds)?data.find(r=>r.time<=seconds&&seconds<r.time+duration):undefined;
+    const candle=!trade.entry_pending&&duration&&Number.isFinite(seconds)?data.find(r=>r.time<=seconds&&seconds<r.time+duration):undefined;
     this.entryIndex=candle?data.indexOf(candle):-1;
     this.markers.setMarkers(candle?[{time:candle.time,position:trade.is_short?'aboveBar':'belowBar',shape:trade.is_short?'arrowDown':'arrowUp',color:this.colors.entry,text:'Entry',size:1.5}]:[]);
     if(previous&&this.timeframe===tf)this.chart.timeScale().setVisibleLogicalRange(previous);

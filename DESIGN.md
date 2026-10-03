@@ -181,6 +181,17 @@ pill shapes.
   applicable, P&L, entry/current-or-exit price and trade window. Timeframes are
   5m, 15m, 1h and 4h. Venue, loading, retry and truncated-history messages remain
   adjacent to the chart.
+- **Entry pending:** while an entry order rests with nothing filled, the card is
+  an order, not a position. It shows an ENTRY PENDING badge in the pending
+  colors and no P&L. "Entry limit" replaces "Entry price", and the chart draws
+  the limit as a dotted pending line without a fill marker. The stop and target
+  chips and the strategy exits are hidden. An entry-order list shows the order's
+  type, side, size and limit, how long it has rested, when Freqtrade's
+  `unfilledtimeout.entry` expires it, and the limit's distance from the current
+  price. The stop row says the stop is not active until the fill, and shows the
+  receiver's posted stop when the entry tag carries one. A partially filled
+  entry keeps its P&L, stop and exits, and lists the filled amount against the
+  requested amount. Unfilled entries add no open notional and no stop risk.
 - **Price action / All exits:** Price action autoscales the candles. All exits
   additionally includes entry, current-or-exit price and available exit levels
   in the price range. Both retain level lines; open positions also list their
@@ -230,7 +241,11 @@ pill shapes.
 
 ## Position close controls
 
-Each open chart has a text-labelled Close position control. A native modal dialog
+Each open chart has a text-labelled Close position control. While an entry
+order rests, Cancel entry order replaces it and uses the same dialog, guards and
+authentication. The order identity must still match, it must be the trade's only
+open order, and acceptance is not cancellation. A submitted action stays
+disabled for that trade only. A native modal dialog
 provides protected confirmation focus, bot/market/side/quantity context and bot
 API authentication. Passwords are cleared after submission/dismissal and never
 stored in browser storage. Submission is disabled during and after accepted or

@@ -9032,7 +9032,7 @@
       if (!data.length) return;
       const previous = this.chart.timeScale().getVisibleLogicalRange();
       this.mode = mode;
-      this.exits = [{ price: trade.open_rate, label: "Entry price", state: "entry" }, { price: trade.close_rate, label: trade.is_open ? "Current" : "Exit" }, ...trade.is_open && trade.stop_rate ? [{ price: trade.stop_rate, label: trade.is_open ? "Bot stop" : "Recorded stop", state: "stop" }] : [], ...trade.exit_levels || []].filter((x3) => Number.isFinite(x3.price) && x3.price > 0);
+      this.exits = [trade.entry_pending ? { price: trade.open_rate, label: "Entry limit", state: "pending" } : { price: trade.open_rate, label: "Entry price", state: "entry" }, { price: trade.close_rate, label: trade.is_open ? "Current" : "Exit" }, ...trade.is_open && trade.stop_rate ? [{ price: trade.stop_rate, label: trade.is_open ? "Bot stop" : "Recorded stop", state: "stop" }] : [], ...trade.exit_levels || []].filter((x3) => Number.isFinite(x3.price) && x3.price > 0);
       const reference = data[data.length - 1].close;
       const precision = Math.min(10, Math.max(2, 4 - Math.floor(Math.log10(reference))));
       this.series.applyOptions({ priceFormat: { type: "price", precision, minMove: 10 ** -precision } });
@@ -9044,7 +9044,7 @@
       const opened = raw == null ? NaN : Number.isFinite(numeric) ? numeric < 1e12 ? numeric * 1e3 : numeric : Date.parse(String(raw));
       const seconds2 = opened / 1e3;
       const duration = { "5m": 300, "15m": 900, "1h": 3600, "4h": 14400 }[tf];
-      const candle = duration && Number.isFinite(seconds2) ? data.find((r2) => r2.time <= seconds2 && seconds2 < r2.time + duration) : void 0;
+      const candle = !trade.entry_pending && duration && Number.isFinite(seconds2) ? data.find((r2) => r2.time <= seconds2 && seconds2 < r2.time + duration) : void 0;
       this.entryIndex = candle ? data.indexOf(candle) : -1;
       this.markers.setMarkers(candle ? [{ time: candle.time, position: trade.is_short ? "aboveBar" : "belowBar", shape: trade.is_short ? "arrowDown" : "arrowUp", color: this.colors.entry, text: "Entry", size: 1.5 }] : []);
       if (previous && this.timeframe === tf) this.chart.timeScale().setVisibleLogicalRange(previous);

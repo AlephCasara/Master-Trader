@@ -94,3 +94,81 @@ def test_upstream_error_does_not_enable_blind_retry(setup):
     b['request_id']=str(uuid4())
     assert client.post('/api/trades/test/4/close',headers=h,json=b).status_code==409
     assert up.post.await_count==1
+
+
+# ── Cancel a resting entry order (#159) ──────────────────────────────────────
+@pytest.fixture
+def pending(setup):
+    client, h, b, t, up = setup
+    h['X-Trade-Action'] = 'cancel-entry'
+    b = {'request_id': str(uuid4()), 'pair': 'TEST/USDC:USDC', 'order_id': 'entry-1', 'amount': 0.,
+         'open_timestamp': 12345678., 'is_short': False}
+    t = {'trade_id': 4, 'pair': b['pair'], 'amount': 0., 'open_timestamp': b['open_timestamp'], 'is_short': False,
+         'orders': [{'order_id': 'entry-1', 'is_open': True, 'ft_order_side': 'buy', 'status': 'open', 'filled': 0}]}
+    up.get.return_value = httpx.Response(200, json=[t], request=httpx.Request('GET', 'http://executor'))
+    up.delete.return_value = httpx.Response(200, json={}, request=httpx.Request('DELETE', 'http://executor'))
+    return client, h, b, t, up
+
+
+def test_confirmed_cancel_entry_submits_once(pending):
+    client, h, b, t, up = pending
+    assert client.post('/api/trades/test/4/cancel-entry', headers=h, json=b).json()['state'] == 'accepted'
+    assert client.post('/api/trades/test/4/cancel-entry', headers=h, json=b).json()['replayed']
+    up.delete.assert_awaited_once_with('http://executor/api/v1/trades/4/open-order')
+    b['request_id'] = str(uuid4())
+    assert client.post('/api/trades/test/4/cancel-entry', headers=h, json=b).status_code == 409
+    assert up.delete.await_count == 1
+    up.post.assert_not_awaited()
+
+
+def test_cancel_entry_needs_its_own_action_header(pending):
+    client, h, b, t, up = pending
+    h['X-Trade-Action'] = 'close'
+    assert client.post('/api/trades/test/4/cancel-entry', headers=h, json=b).status_code == 403
+    up.get.assert_not_awaited(); up.delete.assert_not_awaited()
+
+
+@pytest.mark.parametrize('field,value', [('amount', 5.), ('order_id', 'entry-2'), ('pair', 'OTHER/USDC:USDC'),
+                                         ('open_timestamp', 23456789.), ('is_short', True)])
+def test_stale_confirmation_cannot_cancel_changed_entry(pending, field, value):
+    client, h, b, t, up = pending; b[field] = value
+    assert client.post('/api/trades/test/4/cancel-entry', headers=h, json=b).status_code == 409
+    up.delete.assert_not_awaited()
+
+
+def test_cancel_refused_when_another_order_would_be_cancelled(pending):
+    client, h, b, t, up = pending
+    t['orders'].append({'order_id': 'exit-1', 'is_open': True, 'ft_order_side': 'sell'})
+    up.get.return_value = httpx.Response(200, json=[t], request=httpx.Request('GET', 'http://executor'))
+    assert client.post('/api/trades/test/4/cancel-entry', headers=h, json=b).status_code == 409
+    up.delete.assert_not_awaited()
+
+
+def test_filled_entry_is_not_cancelled(pending):
+    client, h, b, t, up = pending
+    t['orders'][0].update(is_open=False, status='closed')
+    up.get.return_value = httpx.Response(200, json=[t], request=httpx.Request('GET', 'http://executor'))
+    assert client.post('/api/trades/test/4/cancel-entry', headers=h, json=b).json()['state'] == 'no_open_entry'
+    up.delete.assert_not_awaited()
+
+
+def test_pending_cancel_does_not_block_a_later_close(pending):
+    client, h, b, t, up = pending
+    assert client.post('/api/trades/test/4/cancel-entry', headers=h, json=b).json()['state'] == 'accepted'
+    filled = {'trade_id': 4, 'pair': b['pair'], 'amount': 20., 'open_timestamp': b['open_timestamp'], 'is_short': False}
+    up.get.return_value = httpx.Response(200, json=[filled], request=httpx.Request('GET', 'http://executor'))
+    h['X-Trade-Action'] = 'close'
+    close = {'request_id': str(uuid4()), 'pair': b['pair'], 'amount': 20., 'open_timestamp': b['open_timestamp'], 'is_short': False}
+    assert client.post('/api/trades/test/4/close', headers=h, json=close).json()['state'] == 'accepted'
+
+
+def test_existing_action_table_gains_kind_column(tmp_path, monkeypatch):
+    import sqlite3
+    path = tmp_path / 'legacy.sqlite'
+    legacy = sqlite3.connect(path)
+    legacy.execute('CREATE TABLE actions (request_id TEXT PRIMARY KEY, bot TEXT, trade INTEGER, payload TEXT, opened REAL, state TEXT, created TEXT DEFAULT CURRENT_TIMESTAMP)')
+    legacy.execute("INSERT INTO actions(request_id,bot,trade,payload,opened,state) VALUES('r','test',4,'{}',1,'accepted')")
+    legacy.commit(); legacy.close()
+    monkeypatch.setenv('DASHBOARD_ACTION_DB', str(path))
+    with m.connect() as db:
+        assert db.execute('SELECT kind FROM actions').fetchall() == [('close',)]

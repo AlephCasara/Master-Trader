@@ -1,4 +1,10 @@
-"""Human-confirmed full-position exits. No automatic retries or background exits."""
+"""Human-confirmed position actions. No automatic retries or background exits.
+
+Two actions share one guard path: a full-position market close, and the
+cancellation of a resting entry order. Each requires the dashboard origin,
+the bot's API credentials, a fresh /status snapshot that still matches what
+the operator confirmed, and a durable reservation before anything is sent.
+"""
 import base64
 import hmac
 import os
@@ -21,25 +27,42 @@ class ClosePosition(BaseModel):
     is_short: bool
 
 
+class CancelEntry(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    request_id: UUID
+    pair: str = Field(min_length=1, max_length=80)
+    order_id: str = Field(min_length=1, max_length=200)
+    amount: float = Field(ge=0, allow_inf_nan=False)  # filled quantity the operator saw
+    open_timestamp: float = Field(gt=0, allow_inf_nan=False)
+    is_short: bool
+
+
 def connect():
     path = Path(os.environ.get('DASHBOARD_ACTION_DB', '/var/lib/dashboard-actions/actions.sqlite'))
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     db = sqlite3.connect(path, timeout=5)
     path.chmod(0o600)
-    db.execute('CREATE TABLE IF NOT EXISTS actions (request_id TEXT PRIMARY KEY, bot TEXT, trade INTEGER, payload TEXT, opened REAL, state TEXT, created TEXT DEFAULT CURRENT_TIMESTAMP)')
+    db.execute('CREATE TABLE IF NOT EXISTS actions (request_id TEXT PRIMARY KEY, bot TEXT, trade INTEGER, payload TEXT, opened REAL, state TEXT, created TEXT DEFAULT CURRENT_TIMESTAMP, kind TEXT NOT NULL DEFAULT \'close\')')
+    if 'kind' not in {row[1] for row in db.execute('PRAGMA table_info(actions)')}:
+        # Rows written before cancel-entry existed were all full closes.
+        db.execute('ALTER TABLE actions ADD COLUMN kind TEXT NOT NULL DEFAULT \'close\'')
     db.commit()
     return db
 
 
+def _open_entry_orders(trade):
+    entry_side = 'sell' if trade.get('is_short') else 'buy'
+    return [o for o in trade.get('orders', []) if o.get('is_open') and o.get('ft_order_side') == entry_side]
+
+
 def install(app, bots, auth):
-    @app.post('/api/trades/{bot_key}/{trade_id}/close')
-    async def close_position(bot_key: str, trade_id: int, payload: ClosePosition, request: Request):
+    def authorize(bot_key, trade_id, request, action):
         bot = next((b for b in bots if b['key'] == bot_key), None)
         if bot is None or trade_id <= 0:
             raise HTTPException(404, 'Unknown bot or position')
         origin = urlsplit(request.headers.get('origin', ''))
         if (origin.scheme != 'https' or origin.netloc != request.headers.get('host')
-                or request.headers.get('x-trade-action') != 'close'
+                or request.headers.get('x-trade-action') != action
                 or request.headers.get('sec-fetch-site', 'same-origin') != 'same-origin'):
             raise HTTPException(403, 'Use the dashboard on its HTTPS address')
         expected_user, expected_password = auth(bot['url'])
@@ -55,49 +78,89 @@ def install(app, bots, auth):
             authenticated = False
         if not authenticated:
             raise HTTPException(401, 'Bot API username or password is incorrect')
-        body = payload.model_dump_json()
-        key = str(payload.request_id)
+        return bot, (expected_user, expected_password)
+
+    def replay(bot_key, trade_id, payload):
         with connect() as db:
-            previous = db.execute('SELECT bot,trade,payload,state FROM actions WHERE request_id=?', (key,)).fetchone()
+            previous = db.execute('SELECT bot,trade,payload,state FROM actions WHERE request_id=?', (str(payload.request_id),)).fetchone()
         if previous:
-            if previous[:3] != (bot_key, trade_id, body):
+            if previous[:3] != (bot_key, trade_id, payload.model_dump_json()):
                 raise HTTPException(409, 'Request identity was already used for another action')
             return {'state': previous[3], 'replayed': True}
-        async with httpx.AsyncClient(timeout=45, auth=(expected_user, expected_password)) as client:
+        return None
+
+    async def snapshot(client, bot, trade_id, no_action):
+        try:
+            response = await client.get(bot['url'].rstrip('/') + '/api/v1/status')
+            response.raise_for_status()
+            trades = response.json()
+            if not isinstance(trades, list):
+                raise ValueError('Invalid snapshot')
+        except (httpx.HTTPError, ValueError):
+            raise HTTPException(503, f'Cannot refresh position; {no_action}') from None
+        return next((t for t in trades if t.get('trade_id') == trade_id), None)
+
+    def reserve(bot_key, trade_id, payload, kind, conflict):
+        # Durable reservation before the request. A timeout or process death never permits a blind retry.
+        with connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            old = db.execute('SELECT state FROM actions WHERE bot=? AND trade=? AND opened=? AND kind=? AND state IN (\'submitting\',\'accepted\',\'unknown\')', (bot_key, trade_id, payload.open_timestamp, kind)).fetchone()
+            if old:
+                raise HTTPException(409, conflict)
             try:
-                response = await client.get(bot['url'].rstrip('/') + '/api/v1/status')
-                response.raise_for_status()
-                trades = response.json()
-                if not isinstance(trades, list):
-                    raise ValueError('Invalid snapshot')
-            except (httpx.HTTPError, ValueError):
-                raise HTTPException(503, 'Cannot refresh position; no exit submitted') from None
-            trade = next((t for t in trades if t.get('trade_id') == trade_id), None)
+                db.execute('INSERT INTO actions(request_id,bot,trade,payload,opened,state,kind) VALUES(?,?,?,?,?,?,?)', (str(payload.request_id), bot_key, trade_id, payload.model_dump_json(), payload.open_timestamp, 'submitting', kind))
+            except sqlite3.IntegrityError:
+                raise HTTPException(409, 'Request already submitted') from None
+
+    async def submit(payload, send):
+        try:
+            result = await send()
+            # Non-2xx may follow a side effect: treat as uncertain, not safely retryable.
+            state = 'accepted' if result.is_success else 'unknown'
+        except httpx.HTTPError:
+            state = 'unknown'
+        with connect() as db:
+            db.execute('UPDATE actions SET state=? WHERE request_id=?', (state, str(payload.request_id)))
+        return {'state': state, 'replayed': False}
+
+    @app.post('/api/trades/{bot_key}/{trade_id}/close')
+    async def close_position(bot_key: str, trade_id: int, payload: ClosePosition, request: Request):
+        bot, credentials = authorize(bot_key, trade_id, request, 'close')
+        if (previous := replay(bot_key, trade_id, payload)):
+            return previous
+        async with httpx.AsyncClient(timeout=45, auth=credentials) as client:
+            trade = await snapshot(client, bot, trade_id, 'no exit submitted')
             if not trade:
                 return {'state': 'already_closed'}
             if (trade.get('pair') != payload.pair or bool(trade.get('is_short')) != payload.is_short
                     or trade.get('amount') != payload.amount
                     or trade.get('open_timestamp') != payload.open_timestamp):
                 raise HTTPException(409, 'Position changed. Refresh and review it again; no exit submitted')
-            entry_side = 'sell' if trade.get('is_short') else 'buy'
-            if any(o.get('is_open') and o.get('ft_order_side') == entry_side for o in trade.get('orders', [])):
+            if _open_entry_orders(trade):
                 raise HTTPException(409, 'An entry order is still open. Resolve it before closing this position')
-            # Durable reservation before POST. A timeout or process death never permits a blind retry.
-            with connect() as db:
-                db.execute('BEGIN IMMEDIATE')
-                old = db.execute('SELECT state FROM actions WHERE bot=? AND trade=? AND opened=? AND state IN (\'submitting\',\'accepted\',\'unknown\')', (bot_key, trade_id, payload.open_timestamp)).fetchone()
-                if old:
-                    raise HTTPException(409, 'An exit request already exists. Check current orders before another action')
-                try:
-                    db.execute('INSERT INTO actions(request_id,bot,trade,payload,opened,state) VALUES(?,?,?,?,?,?)', (key, bot_key, trade_id, body, payload.open_timestamp, 'submitting'))
-                except sqlite3.IntegrityError:
-                    raise HTTPException(409, 'Request already submitted') from None
-            try:
-                result = await client.post(bot['url'].rstrip('/') + '/api/v1/forceexit', json={'tradeid': str(trade_id), 'ordertype': 'market'})
-                # Non-2xx may follow a side effect: treat as uncertain, not safely retryable.
-                state = 'accepted' if result.is_success else 'unknown'
-            except httpx.HTTPError:
-                state = 'unknown'
-            with connect() as db:
-                db.execute('UPDATE actions SET state=? WHERE request_id=?', (state, key))
-            return {'state': state, 'replayed': False}
+            reserve(bot_key, trade_id, payload, 'close', 'An exit request already exists. Check current orders before another action')
+            return await submit(payload, lambda: client.post(bot['url'].rstrip('/') + '/api/v1/forceexit', json={'tradeid': str(trade_id), 'ordertype': 'market'}))
+
+    @app.post('/api/trades/{bot_key}/{trade_id}/cancel-entry')
+    async def cancel_entry(bot_key: str, trade_id: int, payload: CancelEntry, request: Request):
+        bot, credentials = authorize(bot_key, trade_id, request, 'cancel-entry')
+        if (previous := replay(bot_key, trade_id, payload)):
+            return previous
+        async with httpx.AsyncClient(timeout=45, auth=credentials) as client:
+            trade = await snapshot(client, bot, trade_id, 'no cancel submitted')
+            if not trade:
+                return {'state': 'already_closed'}
+            if (trade.get('pair') != payload.pair or bool(trade.get('is_short')) != payload.is_short
+                    or trade.get('amount') != payload.amount
+                    or trade.get('open_timestamp') != payload.open_timestamp):
+                raise HTTPException(409, 'Entry changed. Refresh and review it again; no cancel submitted')
+            entries = _open_entry_orders(trade)
+            if not entries:
+                return {'state': 'no_open_entry'}
+            # Freqtrade's open-order route cancels every open order on the
+            # trade, so refuse unless the only one is the confirmed entry.
+            if (len(entries) != 1 or entries[0].get('order_id') != payload.order_id
+                    or sum(1 for o in trade.get('orders', []) if o.get('is_open')) != 1):
+                raise HTTPException(409, 'Open orders changed. Refresh and review them again; no cancel submitted')
+            reserve(bot_key, trade_id, payload, 'cancel-entry', 'A cancel request already exists. Check current orders before another action')
+            return await submit(payload, lambda: client.delete(bot['url'].rstrip('/') + f'/api/v1/trades/{trade_id}/open-order'))
