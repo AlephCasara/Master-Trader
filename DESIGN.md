@@ -9,7 +9,7 @@ colors:
   border: "#dce3e9"
   text: "#17232f"
   text-secondary: "#465766"
-  text-muted: "#61717f"
+  text-muted: "#60707e"
   positive: "#16714b"
   negative: "#ba3a35"
   chart-negative: "#c23b35"
@@ -66,6 +66,43 @@ Positive, negative and pending chart colors communicate direction or order state
 text labels carry the same meaning. Positive and negative metric text use the
 workspace semantic colors; candle losses retain the chart-negative shade.
 Position exit-state labels retain their own muted foreground/background pairs.
+
+Every color comes from a CSS custom property. Light values live in the
+`workspace.css` `:root` block over `styles.css`; dark values live in the single
+`:root[data-theme="dark"]` block in `workspace.css`. Translucent tints use channel
+tokens such as `rgb(var(--pos-rgb) / .3)`. Charts read `--chart-*`, `--hairline`
+and `--text-3` through `getComputedStyle` and reapply them on theme change.
+
+The dark theme keeps the same meanings with lighter, desaturated accents. Surfaces
+never reach pure black and get lighter as they rise; raised surfaces keep a
+one-pixel border. Body text is light gray rather than white.
+
+| Token | Light | Dark |
+| --- | --- | --- |
+| `--bg-0` | `#f4f6f8` | `#12171c` |
+| `--surface` | `#fff` | `#1a2027` |
+| `--chart-bg` | `#ffffff` | `#1a2027` |
+| `--surface-2` | `#f6f8fa` | `#20272f` |
+| `--surface-3` | `#eef2f5` | `#272f38` |
+| `--surface-raised` (dialog) | `#fff` | `#242c35` |
+| `--border` / `--hairline` | `#dce3e9` / `#edf1f4` | `#333d48` / `#29313a` |
+| `--text` | `#17232f` | `#d5dce3` |
+| `--text-2` | `#465766` | `#aab5c0` |
+| `--text-3` | `#60707e` | `#939fac` |
+| `--accent` | `#176c84` | `#62b4ca` |
+| `--pos` / `--pos-soft` | `#16714b` / `#e2f3ea` | `#6cc196` / `#183326` |
+| `--neg` / `--neg-soft` | `#ba3a35` / `#fbe8e6` | `#ec8b83` / `#3a1f1f` |
+| `--warn` / `--warn-soft` | `#906412` / `#f7eed8` | `#d8ad5e` / `#362c17` |
+| `--info` / `--info-soft` | `#0c758e` / `#dff0f4` | `#6fb6d0` / `#1a3340` |
+| `--chart-up` / `--chart-down` | `#16714b` / `#c23b35` | `#5fb98b` / `#e47c73` |
+| `--chart-pending` | `#9a690a` | `#d4a24c` |
+| `--control-border` | `#61717f` | `#7f8c99` |
+
+`ft_userdata/ft_dashboard/tests/test_theme_contrast.py` computes WCAG ratios from these files: text pairs
+need 4.5:1 and the focus outline, control borders and chart lines need 3:1.
+Lightweight Charts picks its light or dark TradingView logo from the chart text
+color, so dark `--chart-text` must stay light enough to select the light logo;
+the browser tests check the rendered logo contrast.
 
 ## Typography
 
@@ -158,17 +195,25 @@ pill shapes.
   Scale selection exposes `aria-pressed`, expansion exposes `aria-expanded`
   and chart loading exposes `aria-busy`. Reduced-motion preferences disable
   transitions and smooth scrolling.
+- **Theme:** a 32px icon button in the top bar cycles Light (sun), Dark (moon)
+  and System (half-filled circle). The icon shows the current choice, and the
+  accessible name and tooltip state it in text. System is the default and
+  follows `prefers-color-scheme` live; the choice persists in
+  `localStorage`. An inline head script sets `data-theme` before first paint,
+  `color-scheme` follows it so native controls and the close dialog match, and
+  a `themechange` event recolors charts without changing their viewport or
+  timeframe.
 
 ## Do's and Don'ts
 
 - **Do** keep realized results, open P&L, account equity and estimated stop loss
   distinct, with the measurement epoch and scope visible.
-- **Do** label a bot-reported stop as “Bot stop.” Native exchange protection
+- **Do** label a bot-reported stop as "Bot stop." Native exchange protection
   requires separate venue evidence; a price line is not verification.
 - **Do** retain planned, pending, active, rejected and unknown exit states in
   text. A target is not automatically an exchange order.
 - **Don't** fabricate missing telemetry, mark-to-market history or protection.
-  “No TP order reported” does not rule out a dynamic strategy exit.
+  "No TP order reported" does not rule out a dynamic strategy exit.
 - **Don't** remove the multiple-chart comparison view to accommodate expansion,
   or reset a user's viewport during a same-timeframe refresh.
 

@@ -1,5 +1,6 @@
 import {scaleTime, scaleLinear} from 'd3-scale';
 import {line, curveStepAfter, curveLinear} from 'd3-shape';
+import {themeColor, THEME_CHANGE} from './theme';
 type Point = [number | Date, number];
 type Curve = {label:string; data:Point[]; color:string; step?:boolean};
 type View = {percent?:boolean; snapshot?:{label:string;value:number}|null; note?:string; empty?:string};
@@ -12,12 +13,13 @@ export class Analytics {
   private dead=false;
   private observer:ResizeObserver|null=null;
   private redraw:(()=>void)|null=null;
-  constructor(private el:HTMLElement) {}
+  private retheme=()=>this.redraw?.();
+  constructor(private el:HTMLElement) {document.addEventListener(THEME_CHANGE,this.retheme);}
   private clear(){this.observer?.disconnect();this.observer=null;this.redraw=null;this.el.replaceChildren();}
   lines(curves:Curve[],options:View={}) {
     this.clear();this.el.classList.remove('comparison');
     const legend=node('div','','analytics-legend');
-    for(const curve of curves){const label=node('span',curve.label);const swatch=node('i');swatch.style.background=curve.color;label.prepend(swatch);legend.append(label);}
+    for(const curve of curves){const label=node('span',curve.label);const swatch=node('i');swatch.style.background=`var(${curve.color})`;label.prepend(swatch);legend.append(label);}
     this.el.append(legend);
     if(options.snapshot){const snapshot=node('div','','equity-snapshot');snapshot.append(node('span',options.snapshot.label),node('strong',money(options.snapshot.value)));this.el.append(snapshot);}
     if(options.note)this.el.append(node('div',options.note,'analytics-note'));
@@ -32,6 +34,7 @@ export class Analytics {
       if(width<100||height<60)return;
       plot.replaceChildren();
       const left=8,right=width-76,top=12,bottom=height-32;
+      const grid=themeColor('--hairline'),axis=themeColor('--text-3');
       let minTime=Math.min(...all.map(p=>p[0])),maxTime=Math.max(...all.map(p=>p[0]));
       if(minTime===maxTime){minTime-=86400000;maxTime+=86400000;}
       let min=Math.min(...all.map(p=>p[1])),max=Math.max(...all.map(p=>p[1]));
@@ -41,11 +44,11 @@ export class Analytics {
       const y=scaleLinear().domain([min-pad,options.percent?Math.min(0,max):max+pad]).nice(4).range([bottom,top]);
       const svg=svgNode('svg',{viewBox:`0 0 ${width} ${height}`,width,height,role:'img','aria-label':`${curves.map(c=>c.label).join(', ')} over time`});
       svg.append(svgNode('title',{},'Historical observations. Hover to inspect a date. Current equity is shown separately.'));
-      for(const value of y.ticks(4)){const py=y(value);svg.append(svgNode('line',{x1:left,x2:right,y1:py,y2:py,stroke:'#edf1f4'}));svg.append(svgNode('text',{x:right+12,y:py+4,fill:'#61717f','font-size':12},valueLabel(value)));}
+      for(const value of y.ticks(4)){const py=y(value);svg.append(svgNode('line',{x1:left,x2:right,y1:py,y2:py,stroke:grid}));svg.append(svgNode('text',{x:right+12,y:py+4,fill:axis,'font-size':12},valueLabel(value)));}
       const count=width<450?3:5;
-      for(let i=0;i<count;i++){const time=minTime+(maxTime-minTime)*i/(count-1);svg.append(svgNode('text',{x:x(time),y:height-6,fill:'#61717f','font-size':12,'text-anchor':i===0?'start':i===count-1?'end':'middle'},new Date(time).toLocaleDateString('en-US',{month:'short',day:'numeric',timeZone:'UTC'})));}
-      for(const curve of clean){const path=line<[number,number]>().x(p=>x(p[0])).y(p=>y(p[1])).curve(curve.step?curveStepAfter:curveLinear)(curve.data);if(path)svg.append(svgNode('path',{d:path,fill:'none',stroke:curve.color,'stroke-width':2,'data-series':curve.label}));if(curve.data.length===1)svg.append(svgNode('circle',{cx:x(curve.data[0][0]),cy:y(curve.data[0][1]),r:3,fill:curve.color}));}
-      const cross=svgNode('line',{x1:left,x2:left,y1:top,y2:bottom,stroke:'#9ba8b3','stroke-dasharray':'3 3',visibility:'hidden'});svg.append(cross);
+      for(let i=0;i<count;i++){const time=minTime+(maxTime-minTime)*i/(count-1);svg.append(svgNode('text',{x:x(time),y:height-6,fill:axis,'font-size':12,'text-anchor':i===0?'start':i===count-1?'end':'middle'},new Date(time).toLocaleDateString('en-US',{month:'short',day:'numeric',timeZone:'UTC'})));}
+      for(const curve of clean){const path=line<[number,number]>().x(p=>x(p[0])).y(p=>y(p[1])).curve(curve.step?curveStepAfter:curveLinear)(curve.data);if(path)svg.append(svgNode('path',{d:path,fill:'none',stroke:themeColor(curve.color),'stroke-width':2,'data-series':curve.label}));if(curve.data.length===1)svg.append(svgNode('circle',{cx:x(curve.data[0][0]),cy:y(curve.data[0][1]),r:3,fill:themeColor(curve.color)}));}
+      const cross=svgNode('line',{x1:left,x2:left,y1:top,y2:bottom,stroke:themeColor('--chart-crosshair'),'stroke-dasharray':'3 3',visibility:'hidden'});svg.append(cross);
       const tooltip=node('div','','analytics-tooltip');tooltip.hidden=true;plot.append(svg,tooltip);
       svg.addEventListener('pointermove',event=>{const px=Math.max(left,Math.min(right,(event as PointerEvent).clientX-svg.getBoundingClientRect().left));const time=+x.invert(px);cross.setAttribute('x1',String(px));cross.setAttribute('x2',String(px));cross.setAttribute('visibility','visible');const values=clean.map(c=>{const eligible=c.data.filter(p=>p[0]<=time);const p=eligible[eligible.length-1];return p?`${c.label}: ${valueLabel(p[1])}`:'';}).filter(Boolean);tooltip.textContent=[new Date(time).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric',timeZone:'UTC'}),...values].join(' · ');tooltip.hidden=false;});
       svg.addEventListener('pointerleave',()=>{cross.setAttribute('visibility','hidden');tooltip.hidden=true;});
@@ -61,6 +64,6 @@ export class Analytics {
   }
   getDom(){return this.el;} isDisposed(){return this.dead;}
   resize(){this.redraw?.();}
-  dispose(){this.dead=true;this.clear();}
+  dispose(){this.dead=true;document.removeEventListener(THEME_CHANGE,this.retheme);this.clear();}
 }
 (window as unknown as {TradingAnalytics:typeof Analytics}).TradingAnalytics=Analytics;

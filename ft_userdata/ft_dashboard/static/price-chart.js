@@ -6516,6 +6516,10 @@
   }
   var br = { ...e, color: "#2196f3" };
 
+  // src/theme.ts
+  var themeColor = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  var THEME_CHANGE = "themechange";
+
   // node_modules/d3-array/src/ascending.js
   function ascending(a2, b2) {
     return a2 == null || b2 == null ? NaN : a2 < b2 ? -1 : a2 > b2 ? 1 : a2 >= b2 ? 0 : NaN;
@@ -8841,6 +8845,8 @@
       __publicField(this, "dead", false);
       __publicField(this, "observer", null);
       __publicField(this, "redraw", null);
+      __publicField(this, "retheme", () => this.redraw?.());
+      document.addEventListener(THEME_CHANGE, this.retheme);
     }
     clear() {
       this.observer?.disconnect();
@@ -8855,7 +8861,7 @@
       for (const curve of curves) {
         const label = node("span", curve.label);
         const swatch = node("i");
-        swatch.style.background = curve.color;
+        swatch.style.background = `var(${curve.color})`;
         label.prepend(swatch);
         legend.append(label);
       }
@@ -8884,6 +8890,7 @@
         if (width < 100 || height < 60) return;
         plot.replaceChildren();
         const left = 8, right = width - 76, top = 12, bottom = height - 32;
+        const grid = themeColor("--hairline"), axis = themeColor("--text-3");
         let minTime = Math.min(...all.map((p2) => p2[0])), maxTime = Math.max(...all.map((p2) => p2[0]));
         if (minTime === maxTime) {
           minTime -= 864e5;
@@ -8898,20 +8905,20 @@
         svg.append(svgNode("title", {}, "Historical observations. Hover to inspect a date. Current equity is shown separately."));
         for (const value of y3.ticks(4)) {
           const py = y3(value);
-          svg.append(svgNode("line", { x1: left, x2: right, y1: py, y2: py, stroke: "#edf1f4" }));
-          svg.append(svgNode("text", { x: right + 12, y: py + 4, fill: "#61717f", "font-size": 12 }, valueLabel(value)));
+          svg.append(svgNode("line", { x1: left, x2: right, y1: py, y2: py, stroke: grid }));
+          svg.append(svgNode("text", { x: right + 12, y: py + 4, fill: axis, "font-size": 12 }, valueLabel(value)));
         }
         const count = width < 450 ? 3 : 5;
         for (let i = 0; i < count; i++) {
           const time2 = minTime + (maxTime - minTime) * i / (count - 1);
-          svg.append(svgNode("text", { x: x3(time2), y: height - 6, fill: "#61717f", "font-size": 12, "text-anchor": i === 0 ? "start" : i === count - 1 ? "end" : "middle" }, new Date(time2).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" })));
+          svg.append(svgNode("text", { x: x3(time2), y: height - 6, fill: axis, "font-size": 12, "text-anchor": i === 0 ? "start" : i === count - 1 ? "end" : "middle" }, new Date(time2).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" })));
         }
         for (const curve of clean) {
           const path2 = line_default().x((p2) => x3(p2[0])).y((p2) => y3(p2[1])).curve(curve.step ? stepAfter : linear_default)(curve.data);
-          if (path2) svg.append(svgNode("path", { d: path2, fill: "none", stroke: curve.color, "stroke-width": 2, "data-series": curve.label }));
-          if (curve.data.length === 1) svg.append(svgNode("circle", { cx: x3(curve.data[0][0]), cy: y3(curve.data[0][1]), r: 3, fill: curve.color }));
+          if (path2) svg.append(svgNode("path", { d: path2, fill: "none", stroke: themeColor(curve.color), "stroke-width": 2, "data-series": curve.label }));
+          if (curve.data.length === 1) svg.append(svgNode("circle", { cx: x3(curve.data[0][0]), cy: y3(curve.data[0][1]), r: 3, fill: themeColor(curve.color) }));
         }
-        const cross = svgNode("line", { x1: left, x2: left, y1: top, y2: bottom, stroke: "#9ba8b3", "stroke-dasharray": "3 3", visibility: "hidden" });
+        const cross = svgNode("line", { x1: left, x2: left, y1: top, y2: bottom, stroke: themeColor("--chart-crosshair"), "stroke-dasharray": "3 3", visibility: "hidden" });
         svg.append(cross);
         const tooltip = node("div", "", "analytics-tooltip");
         tooltip.hidden = true;
@@ -8973,12 +8980,14 @@
     }
     dispose() {
       this.dead = true;
+      document.removeEventListener(THEME_CHANGE, this.retheme);
       this.clear();
     }
   };
   window.TradingAnalytics = Analytics;
 
   // src/price-chart.ts
+  var palette = () => ({ bg: themeColor("--chart-bg"), text: themeColor("--chart-text"), grid: themeColor("--chart-grid"), up: themeColor("--chart-up"), down: themeColor("--chart-down"), entry: themeColor("--chart-entry"), pending: themeColor("--chart-pending"), level: themeColor("--chart-level") });
   var PriceChart = class {
     constructor(el) {
       this.el = el;
@@ -8991,8 +9000,18 @@
       __publicField(this, "mode", "price");
       __publicField(this, "markers");
       __publicField(this, "entryIndex", -1);
-      this.chart = Wn(el, { autoSize: true, localization: { locale: "en-US" }, layout: { background: { type: Li.Solid, color: "#ffffff" }, textColor: "#526170", fontSize: 12, attributionLogo: true }, grid: { vertLines: { visible: false }, horzLines: { color: "#edf0f2" } }, rightPriceScale: { borderVisible: false, scaleMargins: { top: 0.12, bottom: 0.12 } }, timeScale: { borderVisible: false, timeVisible: true, secondsVisible: false, rightOffset: 4 }, crosshair: { mode: 0 } });
-      this.series = this.chart.addSeries(Pe, { upColor: "#16714b", downColor: "#c23b35", borderVisible: false, wickUpColor: "#16714b", wickDownColor: "#c23b35", lastValueVisible: false, priceLineVisible: false, autoscaleInfoProvider: ((original) => {
+      __publicField(this, "colors");
+      __publicField(this, "retheme", () => {
+        if (this.dead) return;
+        const c2 = this.colors = palette();
+        this.chart.applyOptions({ layout: { background: { type: Li.Solid, color: c2.bg }, textColor: c2.text }, grid: { horzLines: { color: c2.grid } } });
+        this.series.applyOptions({ upColor: c2.up, downColor: c2.down, wickUpColor: c2.up, wickDownColor: c2.down });
+        this.lines.forEach((line, i) => line.applyOptions({ color: this.levelColor(this.exits[i]?.state) }));
+        this.markers.setMarkers(this.markers.markers().map((m2) => ({ ...m2, color: c2.entry })));
+      });
+      const c2 = this.colors = palette();
+      this.chart = Wn(el, { autoSize: true, localization: { locale: "en-US" }, layout: { background: { type: Li.Solid, color: c2.bg }, textColor: c2.text, fontSize: 12, attributionLogo: true }, grid: { vertLines: { visible: false }, horzLines: { color: c2.grid } }, rightPriceScale: { borderVisible: false, scaleMargins: { top: 0.12, bottom: 0.12 } }, timeScale: { borderVisible: false, timeVisible: true, secondsVisible: false, rightOffset: 4 }, crosshair: { mode: 0 } });
+      this.series = this.chart.addSeries(Pe, { upColor: c2.up, downColor: c2.down, borderVisible: false, wickUpColor: c2.up, wickDownColor: c2.down, lastValueVisible: false, priceLineVisible: false, autoscaleInfoProvider: ((original) => {
         const info = original();
         if (!info?.priceRange || this.mode !== "exits") return info;
         for (const x3 of this.exits) {
@@ -9002,6 +9021,11 @@
         return info;
       }) });
       this.markers = ur(this.series, []);
+      document.addEventListener(THEME_CHANGE, this.retheme);
+    }
+    levelColor(state) {
+      const c2 = this.colors;
+      return state === "entry" ? c2.entry : state === "stop" ? c2.down : state === "active" ? c2.up : state === "pending" ? c2.pending : c2.level;
     }
     render(rows, trade, tf, mode) {
       const data = rows.filter((r2) => r2.length >= 5 && r2.every(Number.isFinite)).map((r2) => ({ time: Math.floor(r2[0] / 1e3), open: r2[1], close: r2[2], low: r2[3], high: r2[4] })).sort((a2, b2) => a2.time - b2.time).filter((r2, i, a2) => !i || r2.time !== a2[i - 1].time);
@@ -9014,7 +9038,7 @@
       this.series.applyOptions({ priceFormat: { type: "price", precision, minMove: 10 ** -precision } });
       this.series.setData(data);
       this.lines.forEach((line) => this.series.removePriceLine(line));
-      this.lines = this.exits.map((x3) => this.series.createPriceLine({ price: x3.price, title: x3.label, axisLabelVisible: true, color: x3.state === "entry" ? "#176c84" : x3.state === "stop" ? "#c23b35" : x3.state === "active" ? "#16714b" : x3.state === "pending" ? "#9a690a" : "#657482", lineStyle: x3.state === "entry" || x3.state === "active" ? h.Solid : h.Dotted, lineWidth: x3.state === "entry" ? 2 : 1 }));
+      this.lines = this.exits.map((x3) => this.series.createPriceLine({ price: x3.price, title: x3.label, axisLabelVisible: true, color: this.levelColor(x3.state), lineStyle: x3.state === "entry" || x3.state === "active" ? h.Solid : h.Dotted, lineWidth: x3.state === "entry" ? 2 : 1 }));
       const raw = trade.open_ts;
       const numeric = Number(raw);
       const opened = raw == null ? NaN : Number.isFinite(numeric) ? numeric < 1e12 ? numeric * 1e3 : numeric : Date.parse(String(raw));
@@ -9022,7 +9046,7 @@
       const duration = { "5m": 300, "15m": 900, "1h": 3600, "4h": 14400 }[tf];
       const candle = duration && Number.isFinite(seconds2) ? data.find((r2) => r2.time <= seconds2 && seconds2 < r2.time + duration) : void 0;
       this.entryIndex = candle ? data.indexOf(candle) : -1;
-      this.markers.setMarkers(candle ? [{ time: candle.time, position: trade.is_short ? "aboveBar" : "belowBar", shape: trade.is_short ? "arrowDown" : "arrowUp", color: "#176c84", text: "Entry", size: 1.5 }] : []);
+      this.markers.setMarkers(candle ? [{ time: candle.time, position: trade.is_short ? "aboveBar" : "belowBar", shape: trade.is_short ? "arrowDown" : "arrowUp", color: this.colors.entry, text: "Entry", size: 1.5 }] : []);
       if (previous && this.timeframe === tf) this.chart.timeScale().setVisibleLogicalRange(previous);
       else this.chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, data.length - 90), to: data.length + 3 });
       this.timeframe = tf;
@@ -9043,6 +9067,7 @@
     }
     dispose() {
       this.dead = true;
+      document.removeEventListener(THEME_CHANGE, this.retheme);
       this.chart.remove();
     }
   };
