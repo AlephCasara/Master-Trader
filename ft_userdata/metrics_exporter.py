@@ -514,6 +514,89 @@ def send_circuit_breaker_alert(portfolio_value: float, drawdown_pct: float) -> N
         log.error("Failed to send circuit breaker alert: %s", exc)
 
 
+# ── Sustained-condition alerts ────────────────────────────────────
+# The exporter probes the gateway from outside its failure domain every cycle.
+# Without a push, an outage that starts after the last signal stays silent
+# until the next signal fails or someone opens the dashboard (#94).
+GATEWAY_DOWN_ALERT_AFTER = 180       # /healthz unreachable or malformed
+GATEWAY_DEGRADED_ALERT_AFTER = 900   # /healthz reports request failures
+# trade-webhook truncates "WARN <message>" to 200 characters before Telegram.
+OPS_ALERT_MAX_CHARS = 190
+
+
+def send_ops_alert(bot_name: str, message: str, kind: str = "warning") -> bool:
+    """Push one operator message through trade-webhook to Telegram.
+
+    Returns True only when the webhook accepted it and did not report a failed
+    Telegram send, so the caller can retry an undelivered alert next cycle.
+    """
+    try:
+        resp = requests.post(WEBHOOK_URL, json={"type": kind, "bot_name": bot_name,
+                                                "status": message[:OPS_ALERT_MAX_CHARS]},
+                             timeout=10)
+    except requests.RequestException as exc:
+        log.error("Failed to send %s alert: %s", bot_name, exc)
+        return False
+    if resp.status_code not in (200, 201, 204):
+        log.warning("%s alert webhook returned HTTP %d", bot_name, resp.status_code)
+        return False
+    try:
+        delivered = resp.json().get("telegram_sent") is not False
+    except (ValueError, AttributeError):
+        delivered = True
+    if not delivered:
+        log.warning("%s alert accepted by webhook but not sent to Telegram", bot_name)
+    return delivered
+
+
+class SustainedAlert:
+    """One push when a condition persists past a window, one when it clears.
+
+    An episode starts at the first bad observation. Undelivered messages are
+    retried on the next update instead of being marked as sent.
+    """
+
+    def __init__(self, bot_name: str):
+        self.bot_name = bot_name
+        self.since: float | None = None
+        self.alerted = False
+
+    def update(self, detail: str | None, now: float, after: float) -> None:
+        if detail:
+            if self.since is None:
+                self.since = now
+            if not self.alerted and now - self.since >= after:
+                minutes = int((now - self.since) // 60)
+                self.alerted = send_ops_alert(self.bot_name, detail.format(minutes=minutes))
+            return
+        if self.alerted:
+            minutes = int((now - self.since) // 60) if self.since is not None else 0
+            if not send_ops_alert(self.bot_name, f"Recovered after {minutes} min.", "status"):
+                return
+            self.alerted = False
+        self.since = None
+
+
+GATEWAY_ALERT = SustainedAlert("fleet-hl-gateway")
+
+
+def watch_gateway(gateway, now: float) -> None:
+    """Alert on a sustained hl-gateway outage or request failure, and on recovery."""
+    if not isinstance(gateway, dict):
+        GATEWAY_ALERT.update(
+            "Hyperliquid gateway unreachable for {minutes} min: HL bots cannot place, "
+            "move or cancel orders (exits, stop moves, TP ladder). Check ft-hl-gateway.",
+            now, GATEWAY_DOWN_ALERT_AFTER)
+    elif gateway.get("status") != "ok":
+        GATEWAY_ALERT.update(
+            f"Hyperliquid gateway failing requests for {{minutes}} min "
+            f"({gateway.get('faults', '?')} in last 5 min): HL orders and exits may not "
+            "reach the venue. Check ft-hl-gateway.",
+            now, GATEWAY_DEGRADED_ALERT_AFTER)
+    else:
+        GATEWAY_ALERT.update(None, now, 0)
+
+
 def check_circuit_breaker(live_pnl: float, account_equity: float | None = None, net_transfers: float = 0) -> None:
     """Check if LIVE portfolio drawdown exceeds threshold and stop LIVE bots if so.
 
@@ -631,6 +714,7 @@ def main() -> None:
                 total_pnl, live_pnl or 0.0, SCRAPE_INTERVAL,
             )
         observation = observe_accounts()
+        watch_gateway(observation["gateway"], time.time())
         if live_pnl is None:
             observation["errors"].append("Live bot status or P&L observation unavailable")
         if observation["complete"] and (live_pnl is not None or _equity_basis == "accounts-v1"):

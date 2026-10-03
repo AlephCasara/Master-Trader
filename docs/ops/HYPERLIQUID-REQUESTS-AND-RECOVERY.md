@@ -8,6 +8,8 @@ All three managed Hyperliquid bots use the gateway for their sync and async CCXT
 
 `GET /healthz` reports request outcomes, latency, queue depth and rolling weight without request bodies or wallet addresses. The exporter copies that health and actual account marks into `account_health.json`; the dashboard warns on recent request failures or missing/stale telemetry. A green dashboard is never justified by missing telemetry.
 
+The exporter also pushes a Telegram message (bot name `fleet-hl-gateway`, through trade-webhook) when `/healthz` stays unreachable for 3 minutes, or keeps reporting request failures for 15 minutes, and one more when it is healthy again. One fault keeps `/healthz` in `warning` for its 5-minute window, so the longer window keeps a single failure from paging. An undelivered message is retried on the next exporter cycle. This alert depends on the exporter and trade-webhook running; it does not restart the gateway, and an unhealthy-but-running container still has to be restarted by hand.
+
 ## Ambiguous order submission
 
 A timeout, crash or unclassified server failure can occur after the exchange accepted an order and before Freqtrade recorded it. An empty Freqtrade order list therefore does **not** authorize a retry. The target stays `unknown`/`placing`, appears as a warning, and defers competing partial-close instructions. A uniquely identified new order/fill can resolve it automatically. Explicit validation rejections and confirmed pre-forward throttling remain distinct from ambiguous writes.

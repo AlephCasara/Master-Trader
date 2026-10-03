@@ -253,3 +253,110 @@ def test_health_with_no_equity_keeps_peak_without_drawdown(exporter, monkeypatch
     saved = json.loads((tmp_path / 'account_health.json').read_text())
     assert saved['peak'] == 120.0
     assert 'drawdown_pct' not in saved
+
+
+class _Webhook:
+    """Captures trade-webhook posts; `replies` scripts (status, telegram_sent)."""
+
+    def __init__(self, replies=()):
+        self.posts = []
+        self.replies = list(replies)
+
+    def __call__(self, url, **kwargs):
+        self.posts.append((url, kwargs))
+        status, sent = self.replies.pop(0) if self.replies else (200, True)
+        return types.SimpleNamespace(status_code=status, json=lambda: {"ok": True, "telegram_sent": sent})
+
+    def messages(self):
+        return [(k["json"]["type"], k["json"]["bot_name"], k["json"]["status"]) for _, k in self.posts]
+
+
+def test_gateway_outage_alerts_once_after_window_and_once_on_recovery(exporter, monkeypatch):
+    webhook = _Webhook()
+    monkeypatch.setattr(exporter.requests, "post", webhook)
+    for t in (0, 60, 120):
+        exporter.watch_gateway(None, 1000 + t)
+    assert webhook.posts == [], "a short blip must not page the operator"
+    exporter.watch_gateway(None, 1180)
+    exporter.watch_gateway(None, 1240)
+    exporter.watch_gateway(None, 1300)
+    assert len(webhook.posts) == 1, "one alert per outage, not one per cycle"
+    kind, bot, message = webhook.messages()[0]
+    assert (kind, bot) == ("warning", "fleet-hl-gateway")
+    assert "unreachable for 3 min" in message
+    assert len("WARN " + message) <= 200, "trade-webhook truncates at 200 chars"
+    assert webhook.posts[0][0] == "http://trade-webhook:8088/freqtrade/event"
+
+    exporter.watch_gateway({"status": "ok", "faults": 0}, 1360)
+    assert webhook.messages()[1] == ("status", "fleet-hl-gateway", "Recovered after 6 min.")
+    exporter.watch_gateway({"status": "ok", "faults": 0}, 1420)
+    assert len(webhook.posts) == 2
+
+    # The next outage is a new episode with its own window.
+    exporter.watch_gateway(None, 2000)
+    exporter.watch_gateway(None, 2100)
+    assert len(webhook.posts) == 2
+    exporter.watch_gateway(None, 2180)
+    assert len(webhook.posts) == 3
+
+
+def test_gateway_request_failures_alert_only_when_sustained(exporter, monkeypatch):
+    webhook = _Webhook()
+    monkeypatch.setattr(exporter.requests, "post", webhook)
+    degraded = {"status": "warning", "faults": 7}
+    for t in range(0, 900, 60):
+        exporter.watch_gateway(degraded, t)
+    assert webhook.posts == [], "one fault keeps /healthz in warning for 5 min; do not page on it"
+    exporter.watch_gateway(degraded, 900)
+    assert len(webhook.posts) == 1
+    assert "7 in last 5 min" in webhook.messages()[0][2]
+    assert len("WARN " + webhook.messages()[0][2]) <= 200
+    # Escalating to unreachable within the same episode is still one episode.
+    exporter.watch_gateway(None, 960)
+    assert len(webhook.posts) == 1
+    # A recovered-then-briefly-degraded gateway does not page.
+    exporter.watch_gateway({"status": "ok"}, 1020)
+    exporter.watch_gateway(degraded, 1080)
+    assert [m[0] for m in webhook.messages()] == ["warning", "status"]
+
+
+def test_undelivered_gateway_alert_is_retried_next_cycle(exporter, monkeypatch):
+    webhook = _Webhook(replies=[(500, None), (200, False), (200, True)])
+    monkeypatch.setattr(exporter.requests, "post", webhook)
+    exporter.watch_gateway(None, 0)
+    for t in (180, 240, 300, 360):
+        exporter.watch_gateway(None, t)
+    assert len(webhook.posts) == 3, "retry after HTTP 500 and after a failed Telegram send, then stop"
+
+
+def test_exporter_loop_pushes_gateway_outage_between_signals(exporter, monkeypatch, tmp_path):
+    """No signal, no dashboard viewer: the exporter loop alone must page."""
+
+    class Clock:
+        now = 1_800_000_000.0
+        cycles = 0
+
+        def time(self):
+            return self.now
+
+        def sleep(self, seconds):
+            self.now += seconds
+            self.cycles += 1
+            if self.cycles >= 5:
+                raise KeyboardInterrupt
+
+    monkeypatch.setattr(exporter, "time", Clock())
+    monkeypatch.setattr(exporter, "ACCOUNT_STATE_FILE", tmp_path / "account_health.json")
+    monkeypatch.setattr(exporter, "PEAK_STATE_FILE", tmp_path / "portfolio_peak.json")
+    monkeypatch.setattr(exporter, "refresh_live_capital", lambda: None)
+    monkeypatch.setattr(exporter, "scrape_all", lambda: (0.0, 0.0))
+
+    def gateway_down(url, **kwargs):
+        raise exporter.requests.ConnectionError("connection refused")
+
+    monkeypatch.setattr(exporter.requests, "get", gateway_down)
+    webhook = _Webhook()
+    monkeypatch.setattr(exporter.requests, "post", webhook)
+    with pytest.raises(KeyboardInterrupt):
+        exporter.main()
+    assert [(m[0], m[1]) for m in webhook.messages()] == [("warning", "fleet-hl-gateway")]
