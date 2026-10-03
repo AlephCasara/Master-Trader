@@ -882,7 +882,82 @@ def _gate3(trades: list[dict], baseline: dict) -> dict:
     }
 
 
+_RESTING_ORDER_STATUSES = {"open", "new", "partially_filled"}
+_UNFILLED_TIMEOUT_UNIT_MS = {"minutes": 60_000, "seconds": 1_000}
+
+
+def _quantity(value) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) and number >= 0 else None
+
+
+def _entry_state(trade: dict, cfg: dict | None) -> dict:
+    """Entry fill state from Freqtrade's order records.
+
+    ``pending``: an entry order rests and nothing has filled, so there is no
+    position yet. ``partial``: an entry order rests and some quantity filled.
+    ``filled``: no entry order rests, or the filled quantity already covers
+    the request. ``unknown``: no entry order rests and nothing filled, or the
+    response has no order records for an empty trade.
+
+    The filled quantity is the larger of the trade amount and the summed
+    order fills: Hyperliquid can report the trade amount before an order
+    record's ``filled`` catches up, and a trade holding quantity is never
+    pending. ``cancellable`` is true only for a pending entry whose trade
+    amount is 0 and whose every entry order reports ``filled`` 0.
+    The expiry is Freqtrade's ``unfilledtimeout.entry`` from order placement.
+    """
+    side = "sell" if trade.get("is_short") else "buy"
+    amount = _quantity(trade.get("amount")) or 0.0
+    orders = trade.get("orders")
+    if not isinstance(orders, list):
+        return {"state": "filled" if amount > 0 else "unknown", "side": side}
+    entries = [o for o in orders if str(o.get("ft_order_side") or "").lower() == side]
+    resting = [o for o in entries if o.get("is_open") is True
+               or str(o.get("status") or "").lower() in _RESTING_ORDER_STATUSES]
+    order_fills = [_quantity(o.get("filled")) for o in entries]
+    filled = max(amount, sum(f or 0.0 for f in order_fills))
+    if not resting:
+        return {"state": "filled" if filled > 0 else "unknown", "side": side}
+    order = resting[-1]
+    requested = _quantity(trade.get("amount_requested")) or _quantity(order.get("amount"))
+    if filled > 0 and requested and filled >= requested:
+        return {"state": "filled", "side": side}
+    placed = _quantity(order.get("order_timestamp"))
+    timeout = (cfg or {}).get("unfilledtimeout") or {}
+    unit_ms = _UNFILLED_TIMEOUT_UNIT_MS.get(str(timeout.get("unit") or "minutes"))
+    limit = _quantity(timeout.get("entry"))
+    return {
+        "state": "partial" if filled > 0 else "pending",
+        "side": side,
+        "order_id": order.get("order_id"),
+        "order_type": order.get("order_type"),
+        "price": _quantity(order.get("price")) or _quantity(trade.get("open_rate")),
+        "requested": requested,
+        "filled": filled,
+        "placed_ts": placed,
+        "expires_ts": (placed + limit * unit_ms) if placed and limit and unit_ms else None,
+        "cancellable": filled == 0 and all(f == 0 for f in order_fills),
+    }
+
+
+def _tagged_stop(enter_tag) -> float | None:
+    """Stop the signal receiver posted at entry (``...|sl:<price>`` in enter_tag)."""
+    if not isinstance(enter_tag, str):
+        return None
+    for part in enter_tag.split("|"):
+        if part.startswith("sl:"):
+            value = _quantity(part[3:])
+            return value if value else None
+    return None
+
+
 def _capital_at_risk(open_trades: list[dict]) -> dict:
+    # An unfilled entry order holds no position: no notional and no stop risk.
+    open_trades = [t for t in open_trades if (_quantity(t.get("amount")) or 0.0) > 0]
     if not open_trades:
         return {"abs_loss": 0.0, "open_count": 0, "open_notional": 0.0}
     risk = 0.0
@@ -1494,6 +1569,8 @@ async def _poll_bot(client: httpx.AsyncClient, bot: dict) -> dict:
             "riding_pct": (None if bp is None else round(100.0 - bp, 1)),
             "is_short": t.get("is_short"),
             "leverage": t.get("leverage"),
+            "entry": _entry_state(t, cfg),
+            "posted_stop": _tagged_stop(t.get("enter_tag")),
         }
         tp = tp_ladder.get(t.get("trade_id"))
         if tp:
