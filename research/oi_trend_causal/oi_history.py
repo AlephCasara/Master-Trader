@@ -9,7 +9,7 @@ minutes. In backtests it has no OI at all, so the conjunction never fires.
 History comes from Binance /futures/data/openInterestHist (period 15m, at most
 500 records per page, and only the most recent ~30 days are served). Each
 record's ``timestamp`` is the snapshot time; the record becomes visible some
-time later (35-140 s observed on 2026-10-03). This module joins it to candles
+time later (35-157 s observed on 2026-10-03). This module joins it to candles
 CAUSALLY:
 
 * A candle opening at T is decided at T + 1h, when it closes. That is the

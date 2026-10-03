@@ -26,8 +26,11 @@ Join rule, per candle (tests: `tests/test_oi_causal_history.py`):
 | baseline | latest poll in [end-50m, end-45m] | record stamped exactly end-45m |
 | missing/stale | no entry | no entry (never copied or interpolated) |
 
-The record stamped T+1h is published 35-140 s after T+1h (measured 2026-10-03,
-ETH/SOL/XRP), so it is not available at the decision; the default lag is 5 min.
+The record stamped T+1h is published 35-157 s after T+1h (9 records, ETH/SOL/XRP,
+polled every ~13 s on 2026-10-03 00:00-00:50 UTC: SOL/XRP 35-49 s, ETH 142-157 s), so
+it is not available at the decision; the default lag is 5 min. Historical values sat
+within 0.01-0.08% of the live endpoint read seconds apart (a near-constant offset per
+symbol, which cancels in a growth ratio).
 Consequence: the historical window is [T, T+45m] while the live bot's is roughly
 [T+10..15m, T+55..60m]. That 10-15 minute offset is the price of causality on a
 15-minute grid and is a stated difference, not an equivalence claim. The
