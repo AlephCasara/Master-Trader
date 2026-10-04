@@ -221,7 +221,7 @@ Script: scratchpad `drift.py`. Binance prices stand in for Hyperliquid marks.
   - signals become time-critical (for example market-now calls on fast movers);
   - risk per trade grows by an order of magnitude;
   - the delay worsens beyond about 60 s.
-- The cheapest thing to try first remains free. The operator can check in the Telegram app whether the channel was archived or muted around 2026-06-18, and undo it. No API calls are involved.
+- Checked 2026-10-04 in the operator's Telegram app: the channel ("Binance Killers Vip", 26,670 subscribers) is muted and not archived. The operator says it was always muted. Posts arrived in about 1 s while it was muted before 2026-06-18, so muting does not explain the change.
 
 ## Open questions
 
