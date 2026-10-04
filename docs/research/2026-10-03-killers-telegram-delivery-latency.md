@@ -139,7 +139,7 @@ Safe cuts are worth about 0.3–1 s, which is small next to the 14 s Telegram le
 
 Instrument the leg first by persisting `t_mark`, `t_ft_post` and `t_ft_return` in `ingress_events`. Do not bypass Freqtrade.
 
-## Recommendation: option 1 behind a flag
+## Original recommendation (superseded by the 2026-10-04 review below): option 1 behind a flag
 
 The change is small and lives in `killers_bot/observer.py`, inside `run()` after the handlers are set up:
 
@@ -185,6 +185,43 @@ Set `KILLERS_TG_NUDGE_SEC=0` in `killers_bot/.env`, then run `systemctl --user r
 ### Expected end-to-end effect
 
 For opens, post → order on Hyperliquid drops from about 17 s median (14.4 + ~2.7) to about 6 s. This holds only if the release hypothesis holds.
+
+## Review 2026-10-04: what the delay costs
+
+The analysis above shows the delay is real. It does not show that the delay costs money. That is measured here, and the result changes the recommendation.
+
+**Method.** The 54 Killers opens since 2026-06-18 that were delivered as pushes (lag 0–120 s) and are listed on Binance. 11 symbols with no Binance listing were skipped. For each open:
+
+- Took the first Binance aggTrade at post time + 3 s, which is what option 1 would at best deliver.
+- Took the first aggTrade at our actual receipt.
+- Signed the price move in the signal's direction, so a positive move is adverse to the entry.
+- Divided it by the stop distance to express it in R.
+
+Script: scratchpad `drift.py`. Binance prices stand in for Hyperliquid marks.
+
+| Set | n | Lag p50 | Adverse move avoided, mean | Median | p90 | Mean in R |
+|---|---|---|---|---|---|---|
+| Opens, slow regime | 54 | 17.8 s | +0.019% | 0.000% | +0.115% | +0.0015 R |
+| Opens, fast regime (control) | 16 | 0.6 s | −0.001% | 0.000% | +0.015% | 0 R |
+
+- **Total over 3.5 months:** 0.08 R across all 54 opens, which is about $1.00 at today's $12 risk.
+- **Worst single open:** JUP, 44 s lag, +0.37%, which is 0.03 R or about $0.38.
+- **Closes:** the 182 close messages moved by an absolute mean of 0.061% over the same window (p90 0.17%). That is an upper bound, because most closes only announce a target that our Hyperliquid-resident TP orders had already filled.
+
+**Why the cost is so small.**
+
+- The signals are 4H/8H swing setups, and price moves only a few hundredths of a percent in 15 s.
+- In 53 of 54 opens the price was already past the posted zone when the channel posted, with a median of 1.66% past the edge. The limit-in-zone misses (#162) came from the channel's timing, not from ours.
+
+**Revised recommendation: do not implement the ping.**
+
+- The expected gain is about $0.30/month. Account risk is very low but not zero, and it falls on the operator's personal Telegram account.
+- It would also add code and maintenance on an archived client library.
+- Keep this document as the diagnosis. Reopen if any of these change:
+  - signals become time-critical (for example market-now calls on fast movers);
+  - risk per trade grows by an order of magnitude;
+  - the delay worsens beyond about 60 s.
+- The cheapest thing to try first remains free. The operator can check in the Telegram app whether the channel was archived or muted around 2026-06-18, and undo it. No API calls are involved.
 
 ## Open questions
 
