@@ -38,7 +38,6 @@ from typing import Optional
 FT_DIR = Path.home() / "ft_userdata"
 LOGS_DIR = FT_DIR / "logs"
 RESULTS_DIR = FT_DIR / "walk_forward_results"
-WEBHOOK_URL = "http://localhost:8088/webhooks/freqtrade"
 
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -412,14 +411,8 @@ def format_report(all_results: list[dict]) -> str:
 
 
 def send_telegram(message: str) -> bool:
-    import requests
-    try:
-        payload = {"type": "status", "status": message}
-        resp = requests.post(WEBHOOK_URL, data=payload, timeout=10)
-        return resp.status_code in (200, 201, 204)
-    except Exception as e:
-        log.error("Failed to send report: %s", e)
-        return False
+    from webhook_notify import send_status
+    return send_status(message, bot_name="walk-forward")
 
 
 # ---------------------------------------------------------------------------

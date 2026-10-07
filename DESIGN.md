@@ -181,6 +181,20 @@ pill shapes.
   applicable, P&L, entry/current-or-exit price and trade window. Timeframes are
   5m, 15m, 1h and 4h. Venue, loading, retry and truncated-history messages remain
   adjacent to the chart.
+- **Entry pending:** while an entry order rests with nothing filled, the card is
+  an order, not a position. It shows an ENTRY PENDING badge in the pending
+  colors and no P&L. "Entry limit" replaces "Entry price", and the chart draws
+  the limit as a dotted pending line without a fill marker. The stop and target
+  chips and the strategy exits are hidden. An entry-order list shows the order's
+  type, side, size and limit, how long it has rested, when Freqtrade's
+  `unfilledtimeout.entry` expires it, and the limit's distance from the current
+  price. The stop row says the stop is not active until the fill, and shows the
+  receiver's posted stop when the entry tag carries one. A trade that holds any
+  quantity is never pending, even if an order record's fill lags behind its
+  amount. A partially filled entry keeps its P&L, stop and exits, and lists the
+  filled amount against the requested amount. Unfilled entries add no open
+  notional and no stop risk. The overview counts them separately ("N open
+  positions · M entry pending").
 - **Price action / All exits:** Price action autoscales the candles. All exits
   additionally includes entry, current-or-exit price and available exit levels
   in the price range. Both retain level lines; open positions also list their
@@ -188,6 +202,17 @@ pill shapes.
   without forcing candle compression. Active levels use solid lines; other
   levels use dashed lines. Refreshes preserve the visible logical range when
   the timeframe is unchanged; a new timeframe starts near the latest 90 bars.
+- **Strategy exits:** open position cards list strategy-managed exits below
+  the exit levels, under a heading that says the bot checks them against price
+  and that they are not resting exchange orders. ROI shows the current
+  threshold and the next age-based step with time remaining. Trailing shows its
+  activation P&L and its price distance, which is the ratio divided by leverage.
+  Time and signal rows come from the strategy's declared rules, and each one
+  carries its exit reason as a tooltip. A setting the bot does not report
+  reads "Not reported by the bot", never "Off". Cards with receiver targets
+  explain that TP numbers are the source signal's own and can skip. The
+  context line shows leverage, says that P&L % is on margin, and gives the
+  unlevered price change from entry.
 - **Expand chart:** expand one card within the grid; Restore grid or Escape
   returns to the comparison layout. This is an inline expansion, not a modal.
 - **Controls:** compact controls have a 36px minimum height and 8px/12px padding.
@@ -219,7 +244,15 @@ pill shapes.
 
 ## Position close controls
 
-Each open chart has a text-labelled Close position control. A native modal dialog
+Each open chart has a text-labelled Close position control. While an entry
+order rests with nothing filled, Cancel entry order replaces it and uses the same
+dialog, guards and authentication. The trade amount and every entry fill must be
+zero, the order identity must still match, and it must be the trade's only open
+order. Once any quantity fills, the dashboard offers no cancel and explains why.
+After the request, the backend fetches the trade again. It reports the order
+cancelled only when the order is gone and nothing filled; otherwise it reports
+"unconfirmed", never success. A submitted action stays disabled for that trade
+only. A native modal dialog
 provides protected confirmation focus, bot/market/side/quantity context and bot
 API authentication. Passwords are cleared after submission/dismissal and never
 stored in browser storage. Submission is disabled during and after accepted or

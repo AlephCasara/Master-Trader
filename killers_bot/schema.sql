@@ -163,20 +163,24 @@ CREATE TABLE IF NOT EXISTS confidence_gate (
 CREATE INDEX IF NOT EXISTS idx_conf_gate_msg ON confidence_gate(msg_id, row_id);
 CREATE INDEX IF NOT EXISTS idx_conf_gate_verdict ON confidence_gate(verdict);
 
--- ── Failed classifications (bd Master-Trader-fg0) ──────────────────────────
--- One row per message whose classification failed. The observer retries with
--- backoff; `state` walks pending → resolved (classified on retry) or pending →
--- dropped (attempts exhausted). An outage of the classifier backend leaves a
--- visible trail here instead of a silent gap in `classifications`.
-CREATE TABLE IF NOT EXISTS classify_failures (
-    msg_id          INTEGER PRIMARY KEY REFERENCES raw_messages(msg_id),
-    first_failed_at TEXT NOT NULL,
-    last_attempt_at TEXT NOT NULL,
-    attempts        INTEGER NOT NULL DEFAULT 0,
-    error_class     TEXT,                    -- binary_missing | timeout | dns_fail | connect_fail | http_429 | http_error | parse_fail | unknown
-    detail          TEXT,                    -- first 200 chars of the cause
-    state           TEXT NOT NULL DEFAULT 'pending',   -- pending / resolved / dropped
-    resolved_at     TEXT
+-- ── Fila de reclassificacao (#95) ──────────────────────────────────────────
+-- Uma linha por mensagem do canal que entrou no pipeline, gravada na mesma
+-- transacao do `raw_messages`. A mensagem so conta como vista em `done`; uma
+-- classificacao que falhou volta em `retry` com backoff, sobrevive a reinicio
+-- e, esgotada, vira `exhausted` com alerta. Mensagens-pai buscadas so para a
+-- cadeia de resposta nao entram aqui. Ver killers_bot/classify_queue.py.
+CREATE TABLE IF NOT EXISTS classify_queue (
+    msg_id        INTEGER PRIMARY KEY,
+    state         TEXT NOT NULL,              -- in_progress | retry | exhausted | done
+    attempts      INTEGER NOT NULL DEFAULT 0, -- falhas desde a ultima entrega do Telegram
+    first_seen_at TEXT NOT NULL,
+    updated_at    TEXT NOT NULL,
+    next_retry_at REAL,                       -- epoch s; so em state = retry
+    last_error    TEXT,                       -- modo da ultima falha
+    alerted       INTEGER NOT NULL DEFAULT 0, -- 1 = um alerta de falha foi entregue
+    payload       TEXT                        -- corpo exato do POST ao receiver, gravado
+                                              -- ANTES do envio; presente = a nova tentativa
+                                              -- reenvia sem reclassificar
 );
 
-CREATE INDEX IF NOT EXISTS idx_classify_failures_state ON classify_failures(state);
+CREATE INDEX IF NOT EXISTS idx_classify_queue_due ON classify_queue(state, next_retry_at);

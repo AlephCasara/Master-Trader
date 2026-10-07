@@ -396,6 +396,8 @@ def run_parameter_perturbation(
         LOW:    ±20% changes P&L < 15% → robust
         MEDIUM: ±20% changes P&L 15-40% → normal
         HIGH:   ±10% changes P&L > 40% → fragile, likely overfitted
+        UNMEASURED: every variant backtest of the param failed; it does not
+                count toward the verdict or the average
 
     Overall stability:
         PASS: no HIGH sensitivity params, avg sensitivity < 25%
@@ -403,10 +405,14 @@ def run_parameter_perturbation(
         FAIL: 2+ HIGH sensitivity params
 
     Returns: {
-        per_param: {param_name: {variants: [...], sensitivity, pct_change}},
-        overall: PASS/WARN/FAIL, or SKIP when there is nothing to perturb,
+        per_param: {param_name: {variants: [...], sensitivity, pct_change,
+                                 variants_succeeded, variants_attempted}},
+        overall: PASS/WARN/FAIL, or SKIP when there is nothing to perturb or
+                 every variant backtest failed,
         stability_score: int (0-100), or None when SKIP,
-        total_backtests_run: int,
+        total_backtests_run: int (attempts, base included),
+        variants_attempted / variants_succeeded: int,
+        params_unmeasured: [param_name, ...],
     }
     """
     numeric_params = _extract_numeric_params(base_params)
@@ -459,7 +465,10 @@ def run_parameter_perturbation(
     log.info("Base P&L: %.2f", base_pnl)
 
     per_param = {}
-    total_backtests = 1  # base backtest already counted
+    total_backtests = 1  # base backtest already counted (attempts, not successes)
+    variants_attempted = 0
+    variants_succeeded = 0
+    unmeasured = []
     high_count = 0
     all_sensitivities = []
 
@@ -516,16 +525,32 @@ def run_parameter_perturbation(
             v["total_profit"] for v in variants
             if v["total_profit"] is not None and not v.get("is_base")
         ]
+        attempted = sum(1 for v in variants if not v.get("is_base"))
+        variants_attempted += attempted
+        variants_succeeded += len(valid_pnls)
 
-        if valid_pnls and abs(base_pnl) > 0.01:
-            max_deviation = max(abs(pnl - base_pnl) for pnl in valid_pnls)
+        if not valid_pnls:
+            # No variant of this param ran, so its sensitivity was never
+            # measured. Scoring it as a 0% change made a broken runner read as
+            # perfect stability (#98); keep it out of the verdict and average.
+            unmeasured.append(param_name)
+            per_param[param_name] = {
+                "base_value": round(base_value, 6),
+                "variants": variants,
+                "sensitivity": "UNMEASURED",
+                "pct_change": None,
+                "variants_succeeded": 0,
+                "variants_attempted": attempted,
+            }
+            log.warning("  %s: all %d variant backtests failed — UNMEASURED", param_name, attempted)
+            continue
+
+        max_deviation = max(abs(pnl - base_pnl) for pnl in valid_pnls)
+        if abs(base_pnl) > 0.01:
             pct_change = (max_deviation / abs(base_pnl)) * 100
-        elif valid_pnls:
-            # Base PnL near zero — use absolute deviation as pct
-            max_deviation = max(abs(pnl - base_pnl) for pnl in valid_pnls)
-            pct_change = max_deviation * 100  # treat $1 deviation as 100%
         else:
-            pct_change = 0.0
+            # Base PnL near zero — use absolute deviation as pct
+            pct_change = max_deviation * 100  # treat $1 deviation as 100%
 
         # Use the smallest perturbation that triggered the deviation for classification
         min_perturb = min(perturb_pcts)
@@ -541,15 +566,38 @@ def run_parameter_perturbation(
             "variants": variants,
             "sensitivity": sensitivity,
             "pct_change": round(pct_change, 1),
+            # Fewer successful variants can only lower the max deviation, so a
+            # partly failed param may understate its sensitivity.
+            "variants_succeeded": len(valid_pnls),
+            "variants_attempted": attempted,
         }
 
         log.info(
-            "  %s: pct_change=%.1f%%, sensitivity=%s",
-            param_name, pct_change, sensitivity,
+            "  %s: pct_change=%.1f%%, sensitivity=%s (%d/%d variants ran)",
+            param_name, pct_change, sensitivity, len(valid_pnls), attempted,
         )
 
-    # Overall assessment
-    avg_sensitivity = sum(all_sensitivities) / len(all_sensitivities) if all_sensitivities else 0
+    if not all_sensitivities:
+        # Same shape as "nothing to perturb": no score, so the combined
+        # robustness score falls back to Monte Carlo alone.
+        reason = (
+            f"every variant backtest failed (0 of {variants_attempted} succeeded)"
+        )
+        log.error("Perturbation measured nothing for %s: %s", strategy_name, reason)
+        return {
+            "per_param": per_param,
+            "overall": "SKIP",
+            "stability_score": None,
+            "total_backtests_run": total_backtests,
+            "variants_attempted": variants_attempted,
+            "variants_succeeded": variants_succeeded,
+            "params_unmeasured": unmeasured,
+            "base_pnl": round(base_pnl, 2),
+            "reason": reason,
+        }
+
+    # Overall assessment (measured params only)
+    avg_sensitivity = sum(all_sensitivities) / len(all_sensitivities)
     if high_count >= 2:
         overall = "FAIL"
     elif high_count == 1:
@@ -570,6 +618,9 @@ def run_parameter_perturbation(
         "overall": overall,
         "stability_score": stability_score,
         "total_backtests_run": total_backtests,
+        "variants_attempted": variants_attempted,
+        "variants_succeeded": variants_succeeded,
+        "params_unmeasured": unmeasured,
         "base_pnl": round(base_pnl, 2),
         "avg_sensitivity_pct": round(avg_sensitivity, 1),
     }

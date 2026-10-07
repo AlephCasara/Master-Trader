@@ -314,6 +314,94 @@ FLEET_REGISTRY: list[dict[str, Any]] = [
     },
 ]
 
+# Exits that Freqtrade's API does not report: each strategy's custom_exit()
+# time rules and dataframe exit signals. The ROI table, stoploss and trailing
+# settings come from the running bot's /show_config instead. Keyed by bot key;
+# "strategy" names the class the container runs (insiders-ft runs
+# KillersScalpV1). tests/test_exit_policy.py parses the strategy source and
+# fails if a threshold or exit reason here drifts from it. These describe the
+# strategy's own rules: they are not exchange orders or observed exits.
+STRATEGY_EXIT_RULES: dict[str, dict[str, Any]] = {
+    "fundingfade": {"strategy": "FundingFadeV1", "rules": [
+        {"kind": "time", "after_hours": 96, "profit_below": 0.0, "reason": "v2_failed_reversion"},
+        {"kind": "time", "after_hours": 168, "profit_below": 0.01, "reason": "v2_expired_episode"},
+    ]},
+    "keltner": {"strategy": "KeltnerBounceV1", "rules": [
+        {"kind": "time", "after_hours": 120, "profit_below": 0.0, "reason": "v2_stale_bounce"},
+    ]},
+    "oi-trend": {"strategy": "OITrendPullbackV1", "rules": [
+        {"kind": "signal", "reason": "ema50_break",
+         "text": "a 1h candle that opened after entry closes below EMA50"},
+    ]},
+    "short-keltner-hl": {"strategy": "ShortKeltnerV2HL", "rules": [
+        {"kind": "time", "after_hours": 36, "profit_below": None, "reason": "time_exit_36h"},
+        {"kind": "signal", "reason": "regime_flip_or_oversold",
+         "text": "BTC's 1h close is above its 1h SMA50, or RSI(14) is below 30"},
+    ]},
+    "killers-ft": {"strategy": "KillersScalpV1", "rules": [], "receiver_driven": True},
+    "insiders-ft": {"strategy": "KillersScalpV1", "rules": [], "receiver_driven": True},
+    # Test lane (dry-run machinery exercisers, not measurement epochs).
+    # Exit stacks verified in strategy source; see
+    # .local/internal-docs/dashboard-numbers.md section 4. The three stock
+    # strategies carry no exit-reason constants (conditions live inline in
+    # populate_exit_trend), so nothing is declared here beyond what each
+    # bot's config reports (ROI ladder / trailing / hard stop).
+    "test-bollinger": {"strategy": "BollingerRSIMeanReversion", "rules": []},
+    "test-nasos": {"strategy": "NASOSv5", "rules": [
+        {"kind": "signal", "reason": "exit_signal",
+         "text": "the strategy's own populate_exit_trend signal (custom stoploss; flat ROI after 6h)"},
+    ]},
+    "test-elliot": {"strategy": "ElliotV5", "rules": []},
+    "test-combined": {"strategy": "CombinedBinHAndCluc", "rules": []},
+}
+
+
+def _exit_policy(cfg: dict | None, bot_key: str) -> dict:
+    """Normalize the bot's reported exit configuration for position cards.
+
+    ``roi`` is ``[[minutes, ratio], ...]`` ascending, or None when the bot did
+    not report a table. ``trailing`` is None when the bot did not report the
+    setting, else ``{"enabled": bool, ...}``. Nothing here is an order.
+    """
+    cfg = cfg or {}
+    roi = None
+    if isinstance(cfg.get("minimal_roi"), dict):
+        roi = []
+        for minutes, ratio in cfg["minimal_roi"].items():
+            try:
+                step = [int(float(minutes)), float(ratio)]
+            except (TypeError, ValueError):
+                continue
+            if step[0] >= 0 and math.isfinite(step[1]):
+                roi.append(step)
+        roi.sort()
+
+    def ratio(name: str) -> float | None:
+        try:
+            value = float(cfg[name])
+        except (KeyError, TypeError, ValueError):
+            return None
+        return value if math.isfinite(value) else None
+
+    trailing = None
+    if "trailing_stop" in cfg:
+        trailing = {"enabled": bool(cfg.get("trailing_stop"))}
+        if trailing["enabled"]:
+            trailing.update({
+                "positive": ratio("trailing_stop_positive"),
+                "offset": ratio("trailing_stop_positive_offset") or 0.0,
+                "only_offset_reached": bool(cfg.get("trailing_only_offset_is_reached")),
+            })
+    declared = STRATEGY_EXIT_RULES.get(bot_key, {})
+    return {
+        "roi": roi,
+        "stoploss": ratio("stoploss"),
+        "trailing": trailing,
+        "rules": [dict(rule) for rule in declared.get("rules", [])],
+        "receiver_driven": bool(declared.get("receiver_driven")),
+    }
+
+
 API_USER = os.environ.get("FREQTRADE__API_SERVER__USERNAME", "")
 API_PASS = os.environ.get("FREQTRADE__API_SERVER__PASSWORD", "")
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "30"))
@@ -953,7 +1041,82 @@ def _gate3(trades: list[dict], baseline: dict) -> dict:
     }
 
 
+_RESTING_ORDER_STATUSES = {"open", "new", "partially_filled"}
+_UNFILLED_TIMEOUT_UNIT_MS = {"minutes": 60_000, "seconds": 1_000}
+
+
+def _quantity(value) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) and number >= 0 else None
+
+
+def _entry_state(trade: dict, cfg: dict | None) -> dict:
+    """Entry fill state from Freqtrade's order records.
+
+    ``pending``: an entry order rests and nothing has filled, so there is no
+    position yet. ``partial``: an entry order rests and some quantity filled.
+    ``filled``: no entry order rests, or the filled quantity already covers
+    the request. ``unknown``: no entry order rests and nothing filled, or the
+    response has no order records for an empty trade.
+
+    The filled quantity is the larger of the trade amount and the summed
+    order fills: Hyperliquid can report the trade amount before an order
+    record's ``filled`` catches up, and a trade holding quantity is never
+    pending. ``cancellable`` is true only for a pending entry whose trade
+    amount is 0 and whose every entry order reports ``filled`` 0.
+    The expiry is Freqtrade's ``unfilledtimeout.entry`` from order placement.
+    """
+    side = "sell" if trade.get("is_short") else "buy"
+    amount = _quantity(trade.get("amount")) or 0.0
+    orders = trade.get("orders")
+    if not isinstance(orders, list):
+        return {"state": "filled" if amount > 0 else "unknown", "side": side}
+    entries = [o for o in orders if str(o.get("ft_order_side") or "").lower() == side]
+    resting = [o for o in entries if o.get("is_open") is True
+               or str(o.get("status") or "").lower() in _RESTING_ORDER_STATUSES]
+    order_fills = [_quantity(o.get("filled")) for o in entries]
+    filled = max(amount, sum(f or 0.0 for f in order_fills))
+    if not resting:
+        return {"state": "filled" if filled > 0 else "unknown", "side": side}
+    order = resting[-1]
+    requested = _quantity(trade.get("amount_requested")) or _quantity(order.get("amount"))
+    if filled > 0 and requested and filled >= requested:
+        return {"state": "filled", "side": side}
+    placed = _quantity(order.get("order_timestamp"))
+    timeout = (cfg or {}).get("unfilledtimeout") or {}
+    unit_ms = _UNFILLED_TIMEOUT_UNIT_MS.get(str(timeout.get("unit") or "minutes"))
+    limit = _quantity(timeout.get("entry"))
+    return {
+        "state": "partial" if filled > 0 else "pending",
+        "side": side,
+        "order_id": order.get("order_id"),
+        "order_type": order.get("order_type"),
+        "price": _quantity(order.get("price")) or _quantity(trade.get("open_rate")),
+        "requested": requested,
+        "filled": filled,
+        "placed_ts": placed,
+        "expires_ts": (placed + limit * unit_ms) if placed and limit and unit_ms else None,
+        "cancellable": filled == 0 and all(f == 0 for f in order_fills),
+    }
+
+
+def _tagged_stop(enter_tag) -> float | None:
+    """Stop the signal receiver posted at entry (``...|sl:<price>`` in enter_tag)."""
+    if not isinstance(enter_tag, str):
+        return None
+    for part in enter_tag.split("|"):
+        if part.startswith("sl:"):
+            value = _quantity(part[3:])
+            return value if value else None
+    return None
+
+
 def _capital_at_risk(open_trades: list[dict]) -> dict:
+    # An unfilled entry order holds no position: no notional and no stop risk.
+    open_trades = [t for t in open_trades if (_quantity(t.get("amount")) or 0.0) > 0]
     if not open_trades:
         return {"abs_loss": 0.0, "open_count": 0, "open_notional": 0.0}
     risk = 0.0
@@ -1564,6 +1727,9 @@ async def _poll_bot(client: httpx.AsyncClient, bot: dict) -> dict:
             "booked_pct": bp,
             "riding_pct": (None if bp is None else round(100.0 - bp, 1)),
             "is_short": t.get("is_short"),
+            "leverage": t.get("leverage"),
+            "entry": _entry_state(t, cfg),
+            "posted_stop": _tagged_stop(t.get("enter_tag")),
         }
         tp = tp_ladder.get(t.get("trade_id"))
         if tp:
@@ -1633,6 +1799,7 @@ async def _poll_bot(client: httpx.AsyncClient, bot: dict) -> dict:
         },
         "readiness": readiness,
         "execution_health": execution_health,
+        "exit_policy": _exit_policy(cfg, bot["key"]),
         "native_stop": _native_stop_verification(bot, open_trades, closed_trades),
         "position_integrity": {
             "status": "critical" if position_issues else "ok",
@@ -2000,6 +2167,9 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan, title="master-trader")
 from trade_controls import install as install_trade_controls
 install_trade_controls(app, BOTS, _api_auth)
+from widgets import install as install_widgets
+install_widgets(app, lambda: {"last_poll": _cache.get("last_poll_finished_at"),
+                              "bots": _cache.get("bots", {}), "status": _fleet_status()})
 
 
 @app.middleware("http")

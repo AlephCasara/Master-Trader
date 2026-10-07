@@ -22,4 +22,10 @@ if [ ! -f "$SESSION_PATH" ]; then
     exit 1
 fi
 
+# mt-classify walks a fallback chain of model backends with a 180s transport
+# timeout; the observer default (20s, tuned for the host Claude CLI) would
+# SIGKILL it mid-candidate and record a bare timeout instead of the real
+# error. The subprocess must outlive the chain it supervises.
+export KILLERS_CLAUDE_TIMEOUT_SEC="${KILLERS_CLAUDE_TIMEOUT_SEC:-200}"
+
 exec python3 -u -m killers_bot.observer

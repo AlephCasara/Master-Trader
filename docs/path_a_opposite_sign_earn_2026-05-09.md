@@ -24,6 +24,9 @@ Simulator: `ft_userdata/analysis/opposite_sign_earn_sweep.py` (working copy in `
 - Binance 8h funding forward-filled, divided by 8 for hourly equivalent
 - Fees: taker 0.04% (Binance) + 0.045% (HL) = 0.085% per side, 0.17% RT all-in
 - Maker variant: 0.02% Binance + −0.01% HL rebate = 0.02% RT all-in
+- *Erratum (2026-10-02, issue #1):* Hyperliquid's base-tier maker fee is **+0.015%**, not a
+  rebate, so the maker variant understates cost; the closing verdict only strengthens. Current
+  rates live in `ft_userdata/analysis/costs.py`.
 - Sweep: combined-magnitude threshold ∈ {0, 1bp, 5bp, 10bp, 20bp}, min-hold ∈ {0, 4, 8, 24h}
 
 Sample (data overlap, per pair):

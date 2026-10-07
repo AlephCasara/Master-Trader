@@ -20,6 +20,20 @@
 
 set -e
 
+# RETIRED (#100). This installs the pre-VPS Mac schedule into the invoking
+# user's crontab, and on the VPS every line would misbehave: they all run from
+# ~/ft_userdata, not the Dokploy checkout; the 02:00 backup reads no live
+# database (#99); the data download uses BSD-only `date -v` and the mutable
+# :stable image; the 23:00 health report and the funding refresh duplicate
+# jobs that already run; the tournament manager rewrites configs and restarts
+# containers. What the VPS runs is in README.md ("Automation Scripts") and
+# deploy/vps/README.md.
+if [ "${MT_LEGACY_SCHEDULER:-}" != "1" ]; then
+    echo "automation_scheduler.sh is retired (#100): nothing installed." >&2
+    echo "See README.md 'Automation Scripts'. MT_LEGACY_SCHEDULER=1 installs the legacy Mac schedule anyway." >&2
+    exit 1
+fi
+
 FT_DIR="$HOME/ft_userdata"
 LOGS_DIR="$FT_DIR/logs"
 

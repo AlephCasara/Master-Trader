@@ -23,7 +23,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
 
-import requests
+from webhook_notify import send_status
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -35,7 +35,6 @@ PROMPT_TEMPLATE_BRIEF = FT_DIR / "report_prompt_brief.md"
 PROMPT_TEMPLATE_WEEKLY = FT_DIR / "report_prompt_weekly.md"
 STATE_FILE = FT_DIR / "health_report_state.json"
 LOGS_DIR = FT_DIR / "logs"
-WEBHOOK_URL = "http://localhost:8088/webhooks/freqtrade"
 
 # Project memory — read at runtime for fresh context
 MEMORY_DIR = Path.home() / ".claude" / "projects" / "-Users-palmer-Work-Dev-Master-Trader" / "memory"
@@ -287,18 +286,8 @@ def run_claude(prompt: str) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 def send_telegram(message: str) -> bool:
-    """Send report to Telegram via claude-assistant webhook."""
-    try:
-        payload = {"type": "status", "status": message}
-        resp = requests.post(WEBHOOK_URL, data=payload, timeout=10)
-        if resp.status_code in (200, 201, 204):
-            log.info("Report sent to Telegram")
-            return True
-        log.warning("Webhook returned HTTP %d", resp.status_code)
-        return False
-    except Exception as e:
-        log.error("Failed to send report: %s", e)
-        return False
+    """Send report to Telegram through trade-webhook (see webhook_notify)."""
+    return send_status(message, bot_name="ai-health-report")
 
 
 # ---------------------------------------------------------------------------

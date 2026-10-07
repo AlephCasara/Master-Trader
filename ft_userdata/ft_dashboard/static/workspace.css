@@ -177,3 +177,16 @@ button:focus-visible,a:focus-visible,summary:focus-visible { outline:2px solid v
 
 .trade-entry-price { color:var(--accent); display:inline-flex; align-items:center; gap:8px; font-weight:600; }
 .trade-entry-price::before { content:""; width:18px; border-top:2px solid currentColor; flex-shrink:0; }
+
+.exit-policy,.entry-order { margin-top:12px; font-size:12px; line-height:1.5; color:var(--text-2); }
+.exit-policy-head,.entry-order-head { margin:0 0 8px; font-weight:600; }
+.exit-policy dl,.entry-order dl { display:grid; gap:4px; margin:0; }
+.exit-policy dl>div,.entry-order dl>div { display:grid; grid-template-columns:72px minmax(0,1fr); gap:12px; }
+.exit-policy dt,.entry-order dt { color:var(--text-3); }
+.exit-policy dd,.entry-order dd { margin:0; font-variant-numeric:tabular-nums; }
+.exit-policy-note { margin:8px 0 0; color:var(--text-3); }
+.entry-order-note { margin:0 0 12px; font-size:12px; line-height:1.5; color:var(--text-2); text-align:right; }
+.entry-order-head { color:var(--exit-pending-text); }
+.trade-reason.reason-entry-pending { color:var(--exit-pending-text); background:var(--exit-pending-bg); border-color:rgb(var(--warn-rgb) / .3); }
+.trade-entry-price.pending { color:var(--exit-pending-text); }
+.trade-entry-price.pending::before { border-top-style:dotted; }

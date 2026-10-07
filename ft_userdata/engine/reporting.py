@@ -16,9 +16,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-import requests
+from webhook_notify import send_status
 
-from .registry import MODES, RESULTS_DIR, WEBHOOK_URL
+from .registry import MODES, RESULTS_DIR
 
 log = logging.getLogger("engine.reporting")
 
@@ -342,6 +342,12 @@ def build_report_card(strategy_name: str, results: dict) -> str:
         pert_display = " (".join(pert_parts[:1]) + (" (" + ", ".join(pert_parts[1:]) + ")" if len(pert_parts) > 1 else "")
     else:
         pert_display = "SKIPPED"
+    # A variant whose backtest failed is not measured; say so whenever one did.
+    pert_attempted = _safe_get(results, "robustness", "perturbation", "variants_attempted")
+    pert_succeeded = _safe_get(results, "robustness", "perturbation", "variants_succeeded")
+    pert_note = None
+    if pert_attempted and pert_succeeded is not None and pert_succeeded < pert_attempted:
+        pert_note = f"{pert_succeeded}/{pert_attempted} variant backtests ran"
 
     # Recommendation details
     rec_display = recommendation
@@ -372,6 +378,8 @@ def build_report_card(strategy_name: str, results: dict) -> str:
     lines.append(_box_line(f"Consensus:      {consensus_display}"))
     lines.append(_box_line(f"Monte Carlo:    {mc_display}"))
     lines.append(_box_line(f"Perturbation:   {pert_display}"))
+    if pert_note:
+        lines.append(_box_line(f"                {pert_note}"))
     lines.append(_box_line(""))
     lines.append(_box_line(f"RECOMMENDATION: {rec_display}"))
 
@@ -572,9 +580,7 @@ def _write_json(path: Path, data: dict) -> None:
 
 def send_telegram(message: str) -> bool:
     """
-    Send message to Telegram via webhook.
-
-    Posts to WEBHOOK_URL with payload: {"type": "status", "status": message}
+    Send message to Telegram through trade-webhook (see webhook_notify).
 
     Args:
         message: The message text to send.
@@ -582,22 +588,7 @@ def send_telegram(message: str) -> bool:
     Returns:
         True on success, False on failure.
     """
-    try:
-        resp = requests.post(
-            WEBHOOK_URL,
-            json={"type": "status", "status": message},
-            timeout=15,
-        )
-        if resp.status_code == 200:
-            log.info("Telegram message sent (%d chars)", len(message))
-            return True
-        else:
-            log.warning("Telegram webhook returned %d: %s",
-                        resp.status_code, resp.text[:200])
-            return False
-    except requests.RequestException as e:
-        log.error("Failed to send Telegram message: %s", e)
-        return False
+    return send_status(message, bot_name="backtest-engine", timeout=15)
 
 
 # ── Main Entry Point ─────────────────────────────────────────────────────────

@@ -78,14 +78,11 @@ def test_canal_normal_continua_alem_do_raw(base_env, monkeypatch):
         return {"id": msg["id"], "kind": "chat", "symbol": None, "direction": None,
                 "signal_id": None, "confidence": 0.9, "notes": "", "pct": None}
 
-    async def fake_detailed(msg, chain, **k):
-        return await fake_claude(msg, chain, **k), None
-
     async def fake_post(*a, **k):
         raise AssertionError("no receiver_url set — nothing to post")
 
     monkeypatch.setattr(observer, "build_reply_chain", fake_chain)
-    monkeypatch.setattr(observer.classifier, "classify_detailed", fake_detailed)
+    monkeypatch.setattr(observer.classifier, "classify", fake_claude)
     monkeypatch.setattr(observer, "_post_to_receiver", fake_post)
 
     cfg = SimpleNamespace(capture_only=False, use_fast_path=False,

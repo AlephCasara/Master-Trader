@@ -1,4 +1,26 @@
 {
   "_doc": "Audited external cash flows AFTER the accounts-v1 equity migration only. Add a unique id, account (binance-spot or hyperliquid-killers), observed_at UTC timestamp, and signed amount in the account's stake currency (deposit positive, withdrawal negative). Trading P&L, fees, funding and internal margin changes are not transfers. Pre-migration funding is already in the opening observation. Never infer cash flows from balance differences.",
-  "transfers": []
+  "transfers": [
+    {
+      "id": "2026-10-02-binance-brl-pix-deposit",
+      "account": "binance-spot",
+      "observed_at": "2026-10-02T01:16:48Z",
+      "amount": 191.23,
+      "note": "R$1,000 PIX deposit (Binance email 01:16:48 UTC), valued at Freqtrade's est_stake when observed. Converted to USDC; the BRL->USDC conversion cost stays in P&L."
+    },
+    {
+      "id": "2026-10-02-binance-usdc-withdrawal",
+      "account": "binance-spot",
+      "observed_at": "2026-10-02T03:22:34Z",
+      "amount": -189.934477,
+      "note": "USDC withdrawal on Arbitrum One to the operator's Hyperliquid email account (189.334477 received + 0.60 network fee)."
+    },
+    {
+      "id": "2026-10-02-hyperliquid-killers-send-in",
+      "account": "hyperliquid-killers",
+      "observed_at": "2026-10-02T21:06:36Z",
+      "amount": 209.734477,
+      "note": "Hyperliquid Send from the operator's email account (189.134477 from Binance via Across + 20.60 pre-existing). Moved spot->perps at 21:25:18 by the operator (internal, not a transfer)."
+    }
+  ]
 }

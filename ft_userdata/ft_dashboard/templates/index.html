@@ -13,7 +13,7 @@
         integrity="sha384-iZD2X8o1Zdq0HR5H/7oa8W30WS4No+zWCKUPD7fHRay9I1Gf+C4F8sVmw7zec1wW"
         crossorigin="anonymous"></script>
 
-<link rel="stylesheet" href="/static/workspace.css?v=47">
+<link rel="stylesheet" href="/static/workspace.css?v=49">
 <script data-theme-init>
 (() => {
   const root = document.documentElement, key = 'master-trader-theme', media = matchMedia('(prefers-color-scheme: dark)');
@@ -29,21 +29,27 @@
   apply();
 })();
 </script>
-<script defer src="/static/price-chart.js?v=45"></script>
+<script defer src="/static/price-chart.js?v=46"></script>
 </head>
 <body x-data="dash()" x-init="boot()" @keydown.escape.window="expandedTrade=null; $nextTick(() => _scheduleChartResize())">
 
 <dialog class="close-dialog" x-ref="closeDialog" aria-labelledby="close-title" @cancel="closePassword=''">
   <form @submit.prevent="submitClose()">
-    <h2 id="close-title">Close position at market?</h2>
+    <h2 id="close-title" x-text="closeKind==='cancel-entry'?'Cancel the resting entry order?':'Close position at market?'">Close position at market?</h2>
     <p><strong x-text="closeTrade?.pair"></strong> · <span x-text="closeTrade?.bot_name"></span></p>
     <p x-text="closeTrade?.dry_run ? 'Paper trading' : 'Live trading'"></p>
-    <p><span x-text="closeTrade?.is_short?'Short':'Long'"></span> · Full remaining quantity: <strong x-text="closeTrade?.amount"></strong></p>
-    <p>The fill price and final P&amp;L can change before execution. This closes the entire position.</p>
+    <template x-if="closeKind!=='cancel-entry'"><div>
+      <p><span x-text="closeTrade?.is_short?'Short':'Long'"></span> · Full remaining quantity: <strong x-text="closeTrade?.amount"></strong></p>
+      <p>The fill price and final P&amp;L can change before execution. This closes the entire position.</p>
+    </div></template>
+    <template x-if="closeKind==='cancel-entry'"><div>
+      <p x-text="(closeTrade?.entry?.side==='sell'?'Sell':'Buy')+' '+closeTrade?.entry?.requested+' at '+fmtRate(closeTrade?.entry?.price)+' · '+(closeTrade?.entry?.filled||0)+' filled'"></p>
+      <p>The bot asks the exchange to cancel this entry order. If nothing has filled, Freqtrade removes the trade. The dashboard reports success only after the bot confirms the order is gone with nothing filled.</p>
+    </div></template>
     <label>Bot API username<input autocomplete="username" x-model="closeUser" required :disabled="closeBusy"></label>
     <label>Bot API password<input type="password" autocomplete="current-password" x-model="closePassword" required :disabled="closeBusy"></label>
     <p class="close-result" role="status" x-text="closeMessage"></p>
-    <div class="dialog-actions"><button type="button" @click="$refs.closeDialog.close(); closePassword=''">Dismiss</button><button type="submit" class="close-position" :disabled="closeBusy">Confirm market close</button></div>
+    <div class="dialog-actions"><button type="button" @click="$refs.closeDialog.close(); closePassword=''">Dismiss</button><button type="submit" class="close-position" :disabled="closeBusy" x-text="closeKind==='cancel-entry'?'Confirm cancel entry':'Confirm market close'">Confirm market close</button></div>
   </form>
 </dialog>
 
@@ -187,7 +193,7 @@
     <div class="workspace-vitals">
       <div><span>Account equity</span><strong x-text="fmtUsd(hero.walletNow)"></strong><small>Shared accounts counted once</small></div>
       <div><span>Realized P&amp;L</span><strong :class="hero.totalRealizedPnl>=0?'pos':'neg'" x-text="fmtUsdSigned(hero.totalRealizedPnl)"></strong><small x-text="hero.closedTrades+' closed trades · live epochs'"></small></div>
-      <div><span>Unrealized P&amp;L</span><strong :class="hero.totalUnrealizedPnl>=0?'pos':'neg'" x-text="fmtUsdSigned(hero.totalUnrealizedPnl)"></strong><small x-text="hero.openCount+' open positions'"></small></div>
+      <div><span>Unrealized P&amp;L</span><strong :class="hero.totalUnrealizedPnl>=0?'pos':'neg'" x-text="fmtUsdSigned(hero.totalUnrealizedPnl)"></strong><small x-text="hero.openCount+' open positions'+(hero.pendingEntries?' · '+hero.pendingEntries+' entry pending':'')"></small></div>
       <div><span>Loss to bot stops</span><strong x-text="fmtUsd(hero.capitalAtRisk)"></strong><small>Estimate · gaps and fees can increase loss</small></div>
     </div>
 
@@ -243,7 +249,7 @@
                 <td class="right num" :class="(bot.pnl?.closed || 0) >= 0 ? 'pos' : 'neg'" x-text="fmtUsdSigned(bot.pnl?.closed)">—</td>
                 <td class="right num" :class="(bot.pnl?.unrealized || 0) >= 0 ? 'pos' : 'neg'" x-text="fmtUsdSigned(bot.pnl?.unrealized)">—</td>
                 <td class="right num" x-text="bot.stats?.closed_trade_count || 0">0</td>
-                <td class="right num" x-text="bot.open_trades?.length || 0">0</td>
+                <td class="right num" x-text="openPositionCount(bot) + (pendingEntryCount(bot) ? ' +' + pendingEntryCount(bot) + ' pending' : '')">0</td>
                 <td>
                   <span class="readiness-line" :class="readinessTone(bot)">
                     <span class="readiness-dot" aria-hidden="true"></span>
@@ -372,14 +378,15 @@
           <table class="ledger">
             <thead>
               <tr>
-                <th>closed</th><th>pair</th><th class="right">entry</th><th class="right">exit</th>
+                <th>closed</th><th>strategy</th><th>pair</th><th class="right">entry</th><th class="right">exit</th>
                 <th class="right">p&l %</th><th class="right">p&l $</th><th>reason</th>
               </tr>
             </thead>
             <tbody>
-              <template x-for="t in recentLiveTrades" :key="t.close_timestamp + t.pair">
+              <template x-for="t in recentLiveTrades" :key="t._bot + ':' + t.close_timestamp + ':' + t.pair">
                 <tr>
-                  <td x-text="fmtDate(t.close_date)"></td>
+                  <td style="white-space:nowrap" x-text="fmtDate(t.close_date)"></td>
+                  <td style="white-space:nowrap" x-text="t._botLabel"></td>
                   <td class="label" x-text="t.pair"></td>
                   <td class="right" x-text="fmtRate(t.open_rate)"></td>
                   <td class="right" x-text="fmtRate(t.close_rate)"></td>
@@ -409,7 +416,7 @@
     <section class="workspace-vitals" aria-label="Portfolio performance">
       <div><span>Account equity</span><strong x-text="fmtUsd(hero.walletNow)"></strong><small>Shared accounts counted once</small></div>
       <div><span>Realized P&amp;L</span><strong :class="hero.totalRealizedPnl>=0?'pos':'neg'" x-text="fmtUsdSigned(hero.totalRealizedPnl)"></strong><small x-text="hero.closedTrades+' closed trades'"></small></div>
-      <div><span>Unrealized P&amp;L</span><strong :class="hero.totalUnrealizedPnl>=0?'pos':'neg'" x-text="fmtUsdSigned(hero.totalUnrealizedPnl)"></strong><small x-text="hero.openCount+' open positions'"></small></div>
+      <div><span>Unrealized P&amp;L</span><strong :class="hero.totalUnrealizedPnl>=0?'pos':'neg'" x-text="fmtUsdSigned(hero.totalUnrealizedPnl)"></strong><small x-text="hero.openCount+' open positions'+(hero.pendingEntries?' · '+hero.pendingEntries+' entry pending':'')"></small></div>
       <div><span>Max drawdown</span><strong x-text="fmtPct(-portfolioDrawdownMax,2)"></strong><small>Includes the current open mark</small></div>
     </section>
     <div class="grid grid-12 performance-primary">
@@ -444,7 +451,7 @@
       <section class="card col-6"><div class="card-head"><div><h2 class="card-title">By market</h2><p class="card-sub">Largest contributions by absolute impact</p></div></div><div class="chart comparison" id="chart-portfolio-pair"></div></section>
     </div>
     <section class="card"><div class="card-head"><div><h2 class="card-title">Recent closes</h2><p class="card-sub">Last 30 closed trades across live strategies</p></div></div>
-      <div class="portfolio-ledger-wrap"><table class="ledger" x-show="recentLiveTrades.length" x-cloak><thead><tr><th>Closed</th><th>Strategy</th><th>Market</th><th class="right">Return</th><th class="right">P&amp;L</th><th>Exit</th></tr></thead><tbody><template x-for="trade in recentLiveTrades" :key="trade._bot+':'+trade.close_timestamp+':'+trade.pair"><tr><td x-text="fmtDate(trade.close_date)"></td><td x-text="trade._botLabel"></td><td x-text="trade.pair"></td><td class="right" :class="trade.profit_pct>=0?'pos':'neg'" x-text="fmtPctSigned(trade.profit_pct)"></td><td class="right" :class="trade.profit_abs>=0?'pos':'neg'" x-text="fmtUsdSigned(trade.profit_abs)"></td><td><span class="reason-pill" x-text="trade.exit_reason"></span></td></tr></template></tbody></table><div class="empty" x-show="!recentLiveTrades.length">No closed trades in the current live history.</div></div>
+      <div class="portfolio-ledger-wrap"><table class="ledger" x-show="recentLiveTrades.length" x-cloak><thead><tr><th>Closed</th><th>Strategy</th><th>Market</th><th class="right">Return</th><th class="right">P&amp;L</th><th>Exit</th></tr></thead><tbody><template x-for="trade in recentLiveTrades" :key="trade._bot+':'+trade.close_timestamp+':'+trade.pair"><tr><td x-text="fmtDate(trade.close_date)"></td><td style="white-space:nowrap" x-text="trade._botLabel"></td><td x-text="trade.pair"></td><td class="right" :class="trade.profit_pct>=0?'pos':'neg'" x-text="fmtPctSigned(trade.profit_pct)"></td><td class="right" :class="trade.profit_abs>=0?'pos':'neg'" x-text="fmtUsdSigned(trade.profit_abs)"></td><td><span class="reason-pill" x-text="trade.exit_reason"></span></td></tr></template></tbody></table><div class="empty" x-show="!recentLiveTrades.length">No closed trades in the current live history.</div></div>
     </section>
   </main>
 
@@ -733,10 +740,10 @@
                           <span class="adir" :class="ot.is_short?'short':''" x-text="ot.is_short?'SHORT':'LONG'"></span>
                         </span>
                         <span class="abook" x-show="ot.booked_pct > 0" x-text="'booked '+Math.round(ot.booked_pct)+'%'"></span>
-                        <span class="aopen" :class="(ot.profit_pct||0)<0?'l':''" x-show="!ot.booked_pct" x-text="'100% open'"></span>
+                        <span class="aopen" :class="(ot.profit_pct||0)<0?'l':''" x-show="!ot.booked_pct" x-text="ot.entry?.state==='pending'?'entry pending':'100% open'"></span>
                         <span class="aspacer"></span>
                         <span class="atp" x-show="ot.tps_total" x-text="ot.tps_hit+'/'+ot.tps_total+(ot.next_tp ? ' → '+fmtRate(ot.next_tp) : '')"></span>
-                        <span class="apnl num" :class="(ot.profit_pct||0)>=0?'pos':'neg'" x-text="fmtPctSigned(ot.profit_pct)">—</span>
+                        <span class="apnl num" :class="ot.entry?.state==='pending'?'':((ot.profit_pct||0)>=0?'pos':'neg')" x-text="ot.entry?.state==='pending'?'limit '+fmtRate(ot.entry.price):fmtPctSigned(ot.profit_pct)">—</span>
                         <span class="aage" x-text="fmtMin(ot.ageMin)">—</span>
                       </div>
                     </div>
@@ -831,25 +838,25 @@
 
     <div class="trades-grid">
       <template x-for="trade in filteredTrades" :key="trade.bot_key + '-' + trade.open_ts + '-' + trade.pair">
-        <div class="trade-card" :class="{win:trade.is_win,loss:!trade.is_win,expanded:expandedTrade===tradeChartId(trade)}">
+        <div class="trade-card" :class="{win:trade.is_win&&!trade.entry_pending,loss:!trade.is_win&&!trade.entry_pending,expanded:expandedTrade===tradeChartId(trade)}">
           <div class="trade-card-head">
             <div class="trade-card-pair">
               <span class="bot-glyph" :data-bot="trade.bot_key" x-text="(trade.bot_name||'?').charAt(0).toUpperCase()">·</span>
               <span class="pair-name" x-text="trade.pair">PAIR</span>
             </div>
             <div class="trade-card-meta">
-              <span class="trade-pnl" :class="trade.is_win ? 'pos' : 'neg'">
+              <span class="trade-pnl" x-show="!trade.entry_pending" :class="trade.is_win ? 'pos' : 'neg'">
                 <span x-text="(trade.profit_pct >= 0 ? '+' : '') + (trade.profit_pct||0).toFixed(2) + '%'">—</span>
                 <span class="abs" x-text="'(' + fmtUsdSigned(trade.profit_abs) + ')'">—</span>
               </span>
               <span class="trade-reason"
-                    :class="trade.is_open ? 'reason-open' : ('reason-' + (trade.exit_reason||'unknown'))"
-                    x-text="trade.is_open ? 'OPEN' : (trade.exit_reason || '—')">—</span>
+                    :class="trade.is_open ? (trade.entry_pending ? 'reason-entry-pending' : 'reason-open') : ('reason-' + (trade.exit_reason||'unknown'))"
+                    x-text="trade.is_open ? (trade.entry_pending ? 'ENTRY PENDING' : 'OPEN') : (trade.exit_reason || '—')">—</span>
             </div>
           </div>
-          <div class="position-context"><span x-text="trade.bot_name"></span><span x-show="trade.dry_run">Paper trading</span><span x-text="trade.is_short?'Short':'Long'"></span><span x-show="trade.tps_total" x-text="trade.tps_hit+' / '+trade.tps_total+' targets filled'"></span><span x-show="trade.booked_pct>0" x-text="Math.round(trade.booked_pct)+'% realized'"></span></div>
+          <div class="position-context"><span x-text="trade.bot_name"></span><span x-show="trade.dry_run">Paper trading</span><span x-text="trade.is_short?'Short':'Long'"></span><span x-show="trade.leverage>1" x-text="fmtLeverage(trade.leverage)+' leverage · P&amp;L % is on margin'"></span><span x-show="priceMovePct(trade)!=null&&!trade.entry_pending" title="Price change from entry, before leverage and fees" x-text="'Price '+fmtPctSigned(priceMovePct(trade))+' from entry'"></span><span x-show="trade.tps_total" x-text="trade.tps_hit+' / '+trade.tps_total+' targets filled'"></span><span x-show="trade.booked_pct>0" x-text="Math.round(trade.booked_pct)+'% realized'"></span></div>
           <div class="trade-card-detail">
-            <span class="trade-entry-price" title="Average filled entry price · solid blue line on chart">Entry price <strong x-text="(trade.open_rate||0).toPrecision(5)">—</strong></span>
+            <span class="trade-entry-price" :class="{pending:trade.entry_pending}" :title="trade.entry_pending?'Limit price of the resting entry order · nothing has filled · dotted line on chart':'Average filled entry price · solid blue line on chart'"><span x-text="trade.entry_pending?'Entry limit':'Entry price'">Entry price</span> <strong x-text="(trade.open_rate||0).toPrecision(5)">—</strong></span>
             <span class="sep">→</span>
             <span><span x-text="trade.is_open ? 'now' : 'exit'">exit</span> <strong x-text="(trade.close_rate||0).toPrecision(5)">—</strong></span>
             <span class="sep">·</span>
@@ -866,16 +873,31 @@
           </div>
           <div class="chart-controls">
             <div class="scale-toggle" aria-label="Price scale"><button :aria-pressed="tradeScale(trade)==='price'" @click="setTradeScale(trade,'price')">Price action</button><button :aria-pressed="tradeScale(trade)==='exits'" @click="setTradeScale(trade,'exits')">All exits</button></div>
-            <button class="expand-chart" x-show="!tradeChartStatus(trade).clipped" :disabled="!!tradeChartStatus(trade).loading" @click="focusTradeEntry(trade)">Show entry</button>
+            <button class="expand-chart" x-show="!tradeChartStatus(trade).clipped&&!trade.entry_pending" :disabled="!!tradeChartStatus(trade).loading" @click="focusTradeEntry(trade)">Show entry</button>
             <button class="expand-chart" :aria-expanded="expandedTrade===tradeChartId(trade)" @click="expandTrade(trade)" x-text="expandedTrade===tradeChartId(trade)?'Restore grid':'Expand chart'"></button>
           </div>
           <div class="position-actions" x-show="trade.is_open">
-            <button class="close-position" :disabled="!trade.trade_id || !trade.amount" @click="showClose(trade)">Close position…</button>
+            <button class="close-position" x-show="!entryResting(trade)" :disabled="!trade.trade_id || !trade.amount" @click="showClose(trade)">Close position…</button>
+            <button class="close-position" x-show="canCancelEntry(trade)" :disabled="!trade.trade_id" @click="showClose(trade,'cancel-entry')">Cancel entry order…</button>
           </div>
-          <div class="exit-levels" x-show="trade.is_open">
+          <p class="entry-order-note" x-show="entryActionNote(trade)" x-text="entryActionNote(trade)"></p>
+          <div class="entry-order" x-show="entryResting(trade)" x-cloak>
+            <p class="entry-order-head" x-text="trade.entry_pending?'Entry order resting · nothing has filled, so there is no position or P&amp;L yet':'Entry partly filled · the rest of the order is still resting'"></p>
+            <dl>
+              <template x-for="(row,i) in entryOrderRows(trade)" :key="i"><div><dt x-text="row.label"></dt><dd x-text="row.text"></dd></div></template>
+            </dl>
+          </div>
+          <div class="exit-levels" x-show="trade.is_open&&!trade.entry_pending">
             <span x-show="trade.stop_rate" class="exit-stop" x-text="'Bot stop '+fmtRate(trade.stop_rate)"></span>
             <template x-for="(level,i) in (trade.exit_levels||[])" :key="i"><span :class="'exit-'+level.state" x-text="level.label+' '+fmtRate(level.price)+' · '+level.state"></span></template>
-            <span x-show="!(trade.exit_levels||[]).length">No TP order reported · strategy may exit dynamically</span>
+            <span x-show="!(trade.exit_levels||[]).length" x-text="exitPolicyRows(trade).length?'No TP order reported':'No TP order reported · strategy may exit dynamically'"></span>
+          </div>
+          <div class="exit-policy" x-show="exitPolicyRows(trade).length" x-cloak>
+            <p class="exit-policy-head">Strategy exits · the bot checks these against price; they are not resting exchange orders</p>
+            <dl>
+              <template x-for="(row,i) in exitPolicyRows(trade)" :key="i"><div :title="row.reason?'Exit reason: '+row.reason:null"><dt x-text="row.label"></dt><dd x-text="row.text"></dd></div></template>
+            </dl>
+            <p class="exit-policy-note" x-show="(trade.exit_levels||[]).length">TP numbers are the source signal's own target numbers. The receiver may place only some targets, merging or skipping those it cannot place separately, so numbers can skip.</p>
           </div>
           <div class="trade-chart-source">
             <span x-text="venueLabel(raw.bots[trade.bot_key])"></span>
@@ -938,7 +960,7 @@
           </span>
           <span class="bis-stat">
             <span class="bis-stat-k">open</span>
-            <strong class="num" x-text="bot.open_trades?.length || 0">0</strong>
+            <strong class="num" x-text="openPositionCount(bot)">0</strong>
           </span>
           <span class="bis-stat bis-stat-wide">
             <span class="bis-stat-k">activity</span>
@@ -1005,7 +1027,7 @@
         <div class="card col-12">
           <div class="card-head">
             <div class="card-title">Open trade status</div>
-            <div class="card-sub" x-text="(bot.open_trades?.length ?? 0) + ' open · ' + fmtUsd(bot.capital_at_risk?.abs_loss || 0) + ' at risk'">0 open</div>
+            <div class="card-sub" x-text="openPositionCount(bot) + ' open' + (pendingEntryCount(bot) ? ' · ' + pendingEntryCount(bot) + ' entry pending' : '') + ' · ' + fmtUsd(bot.capital_at_risk?.abs_loss || 0) + ' at risk'">0 open</div>
           </div>
           <template x-if="bot.open_trades?.length">
             <div class="ot-list">
@@ -1018,10 +1040,10 @@
                           <span class="adir" :class="ot.is_short?'short':''" x-text="ot.is_short?'SHORT':'LONG'"></span>
                         </span>
                         <span class="abook" x-show="ot.booked_pct > 0" x-text="'booked '+Math.round(ot.booked_pct)+'%'"></span>
-                        <span class="aopen" :class="(ot.profit_pct||0)<0?'l':''" x-show="!ot.booked_pct" x-text="'100% open'"></span>
+                        <span class="aopen" :class="(ot.profit_pct||0)<0?'l':''" x-show="!ot.booked_pct" x-text="ot.entry?.state==='pending'?'entry pending':'100% open'"></span>
                         <span class="aspacer"></span>
                         <span class="atp" x-show="ot.tps_total" x-text="ot.tps_hit+'/'+ot.tps_total+(ot.next_tp ? ' → '+fmtRate(ot.next_tp) : '')"></span>
-                        <span class="apnl num" :class="(ot.profit_pct||0)>=0?'pos':'neg'" x-text="fmtUsdSigned(ot.profit_abs)+' · '+fmtPctSigned(ot.profit_pct)">—</span>
+                        <span class="apnl num" :class="ot.entry?.state==='pending'?'':((ot.profit_pct||0)>=0?'pos':'neg')" x-text="ot.entry?.state==='pending'?'limit '+fmtRate(ot.entry.price):fmtUsdSigned(ot.profit_abs)+' · '+fmtPctSigned(ot.profit_pct)">—</span>
                         <span class="aage" x-text="fmtMin(ot.ageMin)">—</span>
                       </div>
                     </div>
@@ -1160,7 +1182,7 @@
   // expose toMs so Alpine inline expressions can use it
   function toMs(ts) { return !ts ? 0 : ts > 1e12 ? ts : ts * 1000; }
 </script>
-<script src="/static/dashboard.js?v=46"></script>
+<script src="/static/dashboard.js?v=48"></script>
 <div class="chart-attribution"><a href="https://www.tradingview.com/" target="_blank" rel="noopener">Charts by TradingView</a> · <a href="/static/CHART-NOTICE.txt">Notice</a> · <a href="/static/CHART-LICENSE.txt">License</a></div>
 </body>
 </html>

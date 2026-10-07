@@ -128,6 +128,9 @@ _portfolio_peak = 0.0
 _peak_basis = 0.0
 _circuit_breaker_triggered = False
 _last_trigger_time = 0.0
+# Services whose /stopentry failed during the current breach. Only these are
+# retried each cycle; the alert stays on the hourly cooldown.
+_pending_halts: set[str] = set()
 _equity_basis = "legacy"
 _account_transfer_total = 0.0
 ACCOUNT_STATE_FILE = PEAK_STATE_FILE.with_name("account_health.json")
@@ -138,7 +141,7 @@ def _load_peak_state() -> None:
     """Restore high-water mark from disk so a restart mid-drawdown doesn't
     erase the real peak. Without this, _portfolio_peak resets every restart
     and the breaker silently shifts its threshold downward."""
-    global _portfolio_peak, _peak_basis, _circuit_breaker_triggered, _last_trigger_time, _equity_basis, _account_transfer_total
+    global _portfolio_peak, _peak_basis, _circuit_breaker_triggered, _last_trigger_time, _equity_basis, _account_transfer_total, _pending_halts
     try:
         if PEAK_STATE_FILE.exists():
             with open(PEAK_STATE_FILE) as f:
@@ -149,6 +152,7 @@ def _load_peak_state() -> None:
             _last_trigger_time = float(state.get("last_trigger_time", 0.0))
             _equity_basis = state.get("equity_basis", "legacy")
             _account_transfer_total = float(state.get("account_transfer_total", 0))
+            _pending_halts = set(state.get("pending_halts", []))
             log.info(
                 "Restored portfolio peak from %s: $%.2f (triggered=%s)",
                 PEAK_STATE_FILE, _portfolio_peak, _circuit_breaker_triggered,
@@ -171,6 +175,7 @@ def _save_peak_state() -> None:
                 "saved_at": time.time(),
                 "equity_basis": _equity_basis,
                 "account_transfer_total": _account_transfer_total,
+                "pending_halts": sorted(_pending_halts),
             }, f)
         os.replace(tmp, PEAK_STATE_FILE)
     except Exception as exc:
@@ -289,6 +294,28 @@ def refresh_live_capital() -> None:
         "Circuit breaker capital refreshed: %d live bots, $%.2f total starting capital",
         len(_live_bots), _live_initial_capital,
     )
+    for account, strategies in unvalued_live_accounts(live).items():
+        log.error(
+            "CONFIGURATION ERROR: live %s on account %s, which has no valuation adapter. "
+            "It is excluded from the circuit breaker's drawdown; value the account or "
+            "return the bot to dry-run.", ", ".join(strategies), account,
+        )
+
+
+# Accounts the exporter can value from a verified source. A live bot on any
+# other account is a configuration error, not a transient gap: it cannot close
+# on the next scrape, so it must not freeze the breaker for every account (#104).
+VALUED_ACCOUNTS = frozenset({"binance-spot", "hyperliquid-killers"})
+
+
+def unvalued_live_accounts(live_bots: list[dict]) -> dict[str, list[str]]:
+    """Live accounts without a valuation adapter, with the strategies on each."""
+    unvalued: dict[str, list[str]] = {}
+    for bot in live_bots:
+        account = bot.get("capital_account") or bot["service"]
+        if account not in VALUED_ACCOUNTS:
+            unvalued.setdefault(account, []).append(bot.get("strategy", bot["service"]))
+    return unvalued
 
 
 def account_starting_capital(live_bots: list[dict]) -> float:
@@ -322,7 +349,11 @@ def observe_accounts() -> dict:
     groups = {}
     for bot in _live_bots:
         groups.setdefault(bot.get("capital_account") or bot["service"], []).append(bot)
-    for account, members in groups.items():
+    unvalued = unvalued_live_accounts(_live_bots)
+    # The breaker's scope: every live account it can value.
+    covered = [account for account in groups if account not in unvalued]
+    for account in covered:
+        members = groups[account]
         try:
             owners = [b for b in members if b.get("capital_owner")]
             if len(members) > 1 and len(owners) != 1:
@@ -355,16 +386,27 @@ def observe_accounts() -> dict:
         ids = [row["id"] for row in ledger]
         if len(ids) != len(set(ids)):
             raise ValueError("duplicate transfer")
-        result["net_transfers"] = sum(float(row["amount"]) for row in ledger if row["account"] in groups)
+        result["net_transfers"] = sum(float(row["amount"]) for row in ledger if row["account"] in covered)
         if not math.isfinite(result["net_transfers"]):
             raise ValueError("invalid transfer")
     except (OSError, ValueError, KeyError, TypeError):
         result["complete"] = False
         result["errors"].append("External cash-flow ledger unavailable or invalid")
-    if not groups:
-        result["complete"] = False
+    # A transient failure on any covered account still freezes the breaker: a
+    # partial total would fake a drawdown. An account with no adapter was never
+    # part of the total, so excluding it changes nothing the peak was built on.
+    result["breaker_complete"] = result["complete"] and bool(covered)
+    result["breaker_equity"] = (sum(result["accounts"][a]["equity"] for a in covered)
+                                if result["breaker_complete"] else None)
+    if unvalued:
+        result["complete"] = False  # the portfolio total itself is not observed
+        result["unvalued_accounts"] = unvalued
+        for account, strategies in unvalued.items():
+            result["errors"].append(
+                f"Live account {account} ({', '.join(strategies)}) has no valuation "
+                "adapter; excluded from the circuit breaker")
     result["equity"] = (sum(a["equity"] for a in result["accounts"].values())
-                        if result["complete"] else None)
+                        if result["complete"] and groups else None)
     if not _membership_complete:
         result["errors"].append("Live account membership is not fully observed")
     return result
@@ -373,8 +415,8 @@ def observe_accounts() -> dict:
 def save_account_health(observation):
     observation["breaker_triggered"] = _circuit_breaker_triggered
     observation["peak"] = _portfolio_peak
-    if observation.get("complete") and _portfolio_peak > 0:
-        observation["drawdown_pct"] = max(0, (_portfolio_peak - observation["equity"]) / _portfolio_peak * 100)
+    if observation.get("breaker_equity") is not None and _portfolio_peak > 0:
+        observation["drawdown_pct"] = max(0, (_portfolio_peak - observation["breaker_equity"]) / _portfolio_peak * 100)
     try:
         ACCOUNT_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
         tmp = ACCOUNT_STATE_FILE.with_suffix(".tmp")
@@ -507,7 +549,10 @@ def send_circuit_breaker_alert(portfolio_value: float, drawdown_pct: float) -> N
     )
     try:
         payload = {"type": "status", "bot_name": "fleet-circuit-breaker", "status": message}
-        resp = requests.post(WEBHOOK_URL, json=payload, timeout=10)
+        # trade-webhook's shared secret (#97); unset sends no header.
+        token = os.environ.get("TRADE_WEBHOOK_NOTIFY_TOKEN", "").strip()
+        headers = {"X-Notify-Token": token} if token else {}
+        resp = requests.post(WEBHOOK_URL, json=payload, headers=headers, timeout=10)
         if resp.status_code in (200, 201, 204):
             log.info("Circuit breaker alert sent to Telegram")
         else:
@@ -516,13 +561,124 @@ def send_circuit_breaker_alert(portfolio_value: float, drawdown_pct: float) -> N
         log.error("Failed to send circuit breaker alert: %s", exc)
 
 
+# ── Sustained-condition alerts ────────────────────────────────────
+# The exporter probes the gateway from outside its failure domain every cycle.
+# Without a push, an outage that starts after the last signal stays silent
+# until the next signal fails or someone opens the dashboard (#94).
+GATEWAY_DOWN_ALERT_AFTER = 180       # /healthz unreachable or malformed
+GATEWAY_DEGRADED_ALERT_AFTER = 900   # /healthz reports request failures
+# trade-webhook truncates "WARN <message>" to 200 characters before Telegram.
+OPS_ALERT_MAX_CHARS = 190
+
+
+def send_ops_alert(bot_name: str, message: str, kind: str = "warning") -> bool:
+    """Push one operator message through trade-webhook to Telegram.
+
+    Returns True only when the webhook accepted it and did not report a failed
+    Telegram send, so the caller can retry an undelivered alert next cycle.
+    """
+    try:
+        resp = requests.post(WEBHOOK_URL, json={"type": kind, "bot_name": bot_name,
+                                                "status": message[:OPS_ALERT_MAX_CHARS]},
+                             timeout=10)
+    except requests.RequestException as exc:
+        log.error("Failed to send %s alert: %s", bot_name, exc)
+        return False
+    if resp.status_code not in (200, 201, 204):
+        log.warning("%s alert webhook returned HTTP %d", bot_name, resp.status_code)
+        return False
+    try:
+        delivered = resp.json().get("telegram_sent") is not False
+    except (ValueError, AttributeError):
+        delivered = True
+    if not delivered:
+        log.warning("%s alert accepted by webhook but not sent to Telegram", bot_name)
+    return delivered
+
+
+class SustainedAlert:
+    """One push when a condition persists past a window, one when it clears.
+
+    An episode starts at the first bad observation. Undelivered messages are
+    retried on the next update instead of being marked as sent.
+    """
+
+    def __init__(self, bot_name: str):
+        self.bot_name = bot_name
+        self.since: float | None = None
+        self.alerted = False
+
+    def update(self, detail: str | None, now: float, after: float) -> None:
+        if detail:
+            if self.since is None:
+                self.since = now
+            if not self.alerted and now - self.since >= after:
+                minutes = int((now - self.since) // 60)
+                self.alerted = send_ops_alert(self.bot_name, detail.format(minutes=minutes))
+            return
+        if self.alerted:
+            minutes = int((now - self.since) // 60) if self.since is not None else 0
+            if not send_ops_alert(self.bot_name, f"Recovered after {minutes} min.", "status"):
+                return
+            self.alerted = False
+        self.since = None
+
+
+GATEWAY_ALERT = SustainedAlert("fleet-hl-gateway")
+
+
+def watch_gateway(gateway, now: float) -> None:
+    """Alert on a sustained hl-gateway outage or request failure, and on recovery."""
+    if not isinstance(gateway, dict):
+        GATEWAY_ALERT.update(
+            "Hyperliquid gateway unreachable for {minutes} min: HL bots cannot place, "
+            "move or cancel orders (exits, stop moves, TP ladder). Check ft-hl-gateway.",
+            now, GATEWAY_DOWN_ALERT_AFTER)
+    elif gateway.get("status") != "ok":
+        GATEWAY_ALERT.update(
+            f"Hyperliquid gateway failing requests for {{minutes}} min "
+            f"({gateway.get('faults', '?')} in last 5 min): HL orders and exits may not "
+            "reach the venue. Check ft-hl-gateway.",
+            now, GATEWAY_DEGRADED_ALERT_AFTER)
+    else:
+        GATEWAY_ALERT.update(None, now, 0)
+
+
+# #104: a frozen or partial breaker used to show only as a dashboard warning.
+BREAKER_STALL_ALERT_AFTER = 900
+BREAKER_STALL_ALERT = SustainedAlert("fleet-breaker-watch")
+COVERAGE_ALERT = SustainedAlert("fleet-breaker-coverage")
+
+
+def _literal(text: str) -> str:
+    """Escape observed text for SustainedAlert's {minutes} template."""
+    return text.replace("{", "{{").replace("}", "}}")
+
+
+def watch_breaker(observation: dict, evaluated: bool, now: float) -> None:
+    """Page when a live account sits outside the breaker, and when the breaker
+    has not evaluated for a sustained window while live or unknown-mode bots exist."""
+    unvalued = observation.get("unvalued_accounts") or {}
+    COVERAGE_ALERT.update(
+        _literal("Live bot outside the circuit breaker: "
+                 + "; ".join(f"{a} ({', '.join(s)})" for a, s in unvalued.items())
+                 + " has no valuation adapter. Value the account or return the bot to dry-run.")
+        if unvalued else None, now, 0)
+    stalled = (bool(_live_bots) or not _membership_complete) and not evaluated
+    reason = "; ".join(observation.get("errors") or []) or "no complete account observation"
+    BREAKER_STALL_ALERT.update(
+        "Circuit breaker not evaluated for {minutes} min; the drawdown halt is not running. "
+        + _literal(reason) if stalled else None,
+        now, BREAKER_STALL_ALERT_AFTER)
+
+
 def check_circuit_breaker(live_pnl: float, account_equity: float | None = None, net_transfers: float = 0) -> None:
     """Check if LIVE portfolio drawdown exceeds threshold and stop LIVE bots if so.
 
     Inputs are scoped to live (non-dry-run) bots only. The dry-run sleeve has
     no real money and must not influence the breaker.
     """
-    global _portfolio_peak, _peak_basis, _circuit_breaker_triggered, _last_trigger_time, _equity_basis, _account_transfer_total
+    global _portfolio_peak, _peak_basis, _circuit_breaker_triggered, _last_trigger_time, _equity_basis, _account_transfer_total, _pending_halts
 
     if not _live_bots or (account_equity is None and _live_initial_capital <= 0):
         # No live bots configured — breaker is a no-op. Don't update Prometheus
@@ -599,13 +755,23 @@ def check_circuit_breaker(live_pnl: float, account_equity: float | None = None, 
                 drawdown_pct, CIRCUIT_BREAKER_PCT, portfolio_value,
                 _portfolio_peak, _live_initial_capital,
             )
-            succeeded = [stop_bot(bot) for bot in _live_bots]
+            _pending_halts = {bot["service"] for bot in _live_bots if not stop_bot(bot)}
             send_circuit_breaker_alert(portfolio_value, drawdown_pct)
             _circuit_breaker_triggered = True
-            _last_trigger_time = now if all(succeeded) else 0  # retry failed entry halts next cycle
+            _last_trigger_time = now
+            _save_peak_state()
+        elif _pending_halts:
+            # Retry only the halts that failed. Re-stopping every bot and
+            # re-sending the alert each 60s cycle would page indefinitely
+            # whenever one bot was unreachable.
+            retry = [bot for bot in _live_bots if bot["service"] in _pending_halts]
+            _pending_halts = {bot["service"] for bot in retry if not stop_bot(bot)}
+            if _pending_halts:
+                log.warning("Entry halt still failing for %s", ", ".join(sorted(_pending_halts)))
             _save_peak_state()
     elif _circuit_breaker_triggered and drawdown_pct < CIRCUIT_BREAKER_PCT * 0.5:
         _circuit_breaker_triggered = False
+        _pending_halts = set()
         log.info("Circuit breaker reset: drawdown recovered to %.1f%%", drawdown_pct)
         _save_peak_state()
 
@@ -633,10 +799,13 @@ def main() -> None:
                 total_pnl, live_pnl or 0.0, SCRAPE_INTERVAL,
             )
         observation = observe_accounts()
+        watch_gateway(observation["gateway"], time.time())
         if live_pnl is None:
             observation["errors"].append("Live bot status or P&L observation unavailable")
-        if observation["complete"] and (live_pnl is not None or _equity_basis == "accounts-v1"):
-            check_circuit_breaker(live_pnl or 0.0, observation["equity"], observation["net_transfers"])
+        evaluated = observation["breaker_complete"] and (live_pnl is not None or _equity_basis == "accounts-v1")
+        if evaluated:
+            check_circuit_breaker(live_pnl or 0.0, observation["breaker_equity"], observation["net_transfers"])
+        watch_breaker(observation, evaluated, time.time())
         save_account_health(observation)
         if total_pnl is None:
             log.warning("No bots reachable. Sleeping %ds.", SCRAPE_INTERVAL)

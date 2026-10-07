@@ -1,8 +1,9 @@
-# Plain `docker compose` deploy under /home/ubuntu/trade-webhook/, matching
-# the dsrptv/veludo/ocdj pattern. Joins dokploy-network so master-trader's
-# freqtrade containers can reach this service via Docker DNS as
-# `http://trade-webhook:8088/freqtrade/event` — no tailnet, no shared
-# secret in URL, intra-bridge only.
+# Plain `docker compose` deploy under /home/ubuntu/master-trader/services/trade-webhook/,
+# matching the dsrptv/veludo/ocdj pattern. Joins only master-trader's compose
+# network, so the freqtrade containers, receivers and exporter reach it via
+# Docker DNS as `http://trade-webhook:8088/...` — no tailnet, no secret in URL.
+# It is deliberately NOT on dokploy-network (#97): that Swarm overlay is
+# shared with ~25 unrelated applications, none of which calls this service.
 #
 # Secrets live in /etc/lake/ops-bot.env (not in this repo). Lake JSONL
 # output goes to /srv/lake/raw/trades/ which is bind-mounted in.
@@ -18,14 +19,16 @@ services:
     environment:
       LOG_LEVEL: INFO
       TRADES_DIR: /srv/lake/raw/trades
-      # TRADE_WEBHOOK_NOTIFY_TOKEN (#59) is read from /etc/lake/ops-bot.env
-      # with the other secrets — deliberately NOT listed here: an
-      # `environment:` entry such as `${TRADE_WEBHOOK_NOTIFY_TOKEN:-}` takes
-      # precedence over env_file and would silently blank the value unless
-      # the deploying shell also exported it. When set, POST /test/notify
-      # requires a matching X-Notify-Token header (same value as on
-      # killers-receiver / insiders-receiver); unset keeps the legacy open
-      # route and logs a startup WARNING.
+      # TRADE_WEBHOOK_NOTIFY_TOKEN (#59, #97) and TRADE_WEBHOOK_EVENT_AUTH
+      # (#97) are read from /etc/lake/ops-bot.env with the other secrets —
+      # deliberately NOT listed here: an `environment:` entry such as
+      # `${TRADE_WEBHOOK_NOTIFY_TOKEN:-}` takes precedence over env_file and
+      # would silently blank the value unless the deploying shell also
+      # exported it. When the token is set, POST /test/notify requires a
+      # matching X-Notify-Token header (same value as on killers-receiver /
+      # insiders-receiver); unset keeps the legacy open route and logs a
+      # startup WARNING. POST /freqtrade/event checks the same token per
+      # TRADE_WEBHOOK_EVENT_AUTH (monitor by default, or enforce); see README.
     # Bind to host loopback so VPS host-side scripts (e.g. run-health-report.sh
     # cron) can POST to localhost:8088 without joining the docker network.
     # Loopback-only — no external exposure.
@@ -34,12 +37,12 @@ services:
     volumes:
       - /srv/lake/raw/trades:/srv/lake/raw/trades
     networks:
-      # dokploy-network: Swarm overlay shared with Dokploy-managed apps + Traefik.
       # master-trader-net: master-trader's compose bridge, attached as external so
-      #   freqtrade containers can reach this service via Docker DNS as
-      #   `trade-webhook`. Decoupled from master-trader's lifecycle: if it gets
-      #   recreated under a new project name, update the `name:` below.
-      dokploy-network: {}
+      #   every caller (freqtrade bots, receivers + warden, metrics-exporter)
+      #   reaches this service via Docker DNS as `trade-webhook`. Decoupled from
+      #   master-trader's lifecycle: if it gets recreated under a new project
+      #   name, update the `name:` below. Host-side cron jobs use the loopback
+      #   port above.
       master-trader-net: {}
     deploy:
       resources:
@@ -58,8 +61,6 @@ services:
         max-file: "3"
 
 networks:
-  dokploy-network:
-    external: true
   master-trader-net:
     external: true
     name: compose-bypass-mobile-port-fbk1m6_default

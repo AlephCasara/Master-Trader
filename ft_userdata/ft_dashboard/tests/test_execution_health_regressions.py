@@ -175,3 +175,15 @@ def test_never_polled_fleet_cannot_report_a_live_bot_unreachable(monkeypatch):
     assert status['level'] == 'yellow'
     assert status['stale_bots'] == ['ghost']
     assert 'live bot unreachable' not in status['summary']
+
+
+def test_fully_observed_fleet_with_no_live_accounts_stays_green(monkeypatch, tmp_path):
+    import json
+    path = tmp_path / 'health.json'
+    path.write_text(json.dumps({'observed_at': time.time(), 'complete': True,
+       'accounts': {}, 'equity': None, 'errors': [],
+       'gateway': {'observed_at': time.time(), 'status': 'ok', 'faults': 0}}))
+    monkeypatch.setenv('ACCOUNT_HEALTH_FILE', str(path))
+    monkeypatch.setattr(app, 'BOTS', [])
+    assert app._account_health()['warnings'] == []
+    assert app._fleet_status()['level'] == 'green'

@@ -93,6 +93,10 @@ hold the position for ~41 hours at maximum spread — but signals only fire for 
 
 1. **Maker-only execution**: if you can provide liquidity on both venues, HL maker can
    be -0.02% (rebate), Binance maker 0.02%. Round-trip drops to ~0.08%. Marginal.
+   *Erratum (2026-10-02, issue #1):* Hyperliquid's base-tier maker fee is **+0.015%**, a
+   fee, not a rebate (rebates need >0.5% of exchange maker volume). Real costs are higher
+   than assumed here, so the "marginal" verdict only strengthens. Current rates live in
+   `ft_userdata/analysis/costs.py`.
 2. **Bigger dislocations**: the analysis thresholds at >1σ. >3σ events (far rarer but
    much larger) may have favorable edge/fee ratio. Not yet tested.
 3. **Opposite-sign pairs**: ICP/DASH/ZEC — harvest Binance NEGATIVE funding (longs

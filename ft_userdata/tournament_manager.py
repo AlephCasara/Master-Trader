@@ -43,6 +43,8 @@ from typing import Any, Optional
 import requests
 import numpy as np
 
+from webhook_notify import send_status
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -80,7 +82,6 @@ CONFIGS_DIR = Path.home() / "ft_userdata" / "user_data" / "configs"
 LOGS_DIR = Path.home() / "ft_userdata" / "logs"
 STATE_FILE = Path.home() / "ft_userdata" / "tournament_state.json"
 HEALTH_STATE_FILE = Path.home() / "ft_userdata" / "health_report_state.json"
-WEBHOOK_URL = "http://localhost:8088/webhooks/freqtrade"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -678,23 +679,7 @@ def send_telegram_report(
     lines.append(f"\U0001f4c8 Total Portfolio: {total_profit_pct:+.1f}% (${total_portfolio_value:,.0f})")
 
     message = "\n".join(lines)
-
-    # Send via webhook
-    try:
-        payload = {"type": "status", "status": message}
-        r = requests.post(WEBHOOK_URL, data=payload, timeout=10)
-        if r.status_code in (200, 201, 204):
-            log.info("Telegram report sent successfully")
-            return True
-        else:
-            log.warning("Webhook returned HTTP %d: %s", r.status_code, r.text[:200])
-            return False
-    except requests.ConnectionError:
-        log.warning("Cannot reach webhook at %s - report not sent", WEBHOOK_URL)
-        return False
-    except Exception as e:
-        log.error("Webhook error: %s", e)
-        return False
+    return send_status(message, bot_name="tournament-manager")
 
 
 # ---------------------------------------------------------------------------

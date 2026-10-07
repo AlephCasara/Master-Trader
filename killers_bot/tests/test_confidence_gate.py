@@ -117,6 +117,7 @@ def test_config_ausente_desliga_limiares_com_warning(tmp_path, caplog):
     assert "ausente" in caplog.text
     v = cg.evaluate(c, {"kind": "close_full", "confidence": 0.1})
     assert v.verdict == cg.DISABLED and v.threshold is None and v.confidence == 0.1
+    assert v.reason == "config ausente"
 
 
 @pytest.fixture()
@@ -136,6 +137,17 @@ def test_config_malformada_nao_derruba_o_observer(base_env, monkeypatch, tmp_pat
         c = observer.Config()
     assert c.confidence_gate.enabled is False
     assert "gate DESLIGADO" in caplog.text
+    # na tabela, config rejeitada nao se confunde com config ausente
+    v = cg.evaluate(c.confidence_gate, {"kind": "close_full", "confidence": 0.95})
+    assert v.verdict == cg.DISABLED and v.reason == "config invalida"
+
+
+def test_about_do_json_descreve_o_comportamento_real():
+    """O `_about` dizia que um `mode` invalido faz o observer recusar a subir;
+    o codigo desliga o gate e segue (teste acima)."""
+    about = " ".join(json.loads(cg.DEFAULT_PATH.read_text())["_about"])
+    assert "recusar a subir" not in about
+    assert "DESLIGADO" in about and "config invalida" in about
 
 
 def test_config_versionada_e_valida():
@@ -235,17 +247,11 @@ def env(monkeypatch):
         calls["claude"].append(msg["id"])
         return dict(copy.deepcopy(state["reply"]), id=msg["id"])
 
-    async def fake_detailed(msg, chain, **k):
-        # caminho principal usa classify_detailed; shadow continua em classify
-        cls = await fake_claude(msg, chain, **k)
-        return cls, None
-
     async def fake_post(url, msg, cls, token=""):
         calls["posted"].append((url, copy.deepcopy(msg), copy.deepcopy(cls), token))
 
     monkeypatch.setattr(observer, "build_reply_chain", fake_chain)
     monkeypatch.setattr(observer.classifier, "classify", fake_claude)
-    monkeypatch.setattr(observer.classifier, "classify_detailed", fake_detailed)
     monkeypatch.setattr(observer, "_post_to_receiver", fake_post)
     monkeypatch.setattr(observer.simulator, "update_paper_position",
                         lambda c, m, cls: calls["sim"].append(cls["kind"]))

@@ -14,6 +14,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # loaded at Config() time. Missing any of them the container crash-loops.
 COPY __init__.py /app/killers_bot/__init__.py
 COPY classifier.py /app/killers_bot/classifier.py
+COPY classify_queue.py /app/killers_bot/classify_queue.py
 COPY confidence_gate.py /app/killers_bot/confidence_gate.py
 COPY confidence_gate.json /app/killers_bot/confidence_gate.json
 COPY rules_classifier.py /app/killers_bot/rules_classifier.py

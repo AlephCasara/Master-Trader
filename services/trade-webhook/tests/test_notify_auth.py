@@ -1,7 +1,7 @@
 """POST /test/notify requires X-Notify-Token when configured (#59).
 
-The route relays caller text to the ops Telegram chat from a container on the
-shared dokploy-network. With TRADE_WEBHOOK_NOTIFY_TOKEN set, a missing or
+The route relays caller text to the ops Telegram chat (the container was on
+the shared dokploy-network until #97). With TRADE_WEBHOOK_NOTIFY_TOKEN set, a missing or
 wrong header is a 401 and Telegram is never called; unset keeps the legacy
 open route (rollout stage 1) but warns at startup.
 """

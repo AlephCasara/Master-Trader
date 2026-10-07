@@ -6,24 +6,22 @@ Run via the Docker entrypoint, or locally:
   python3 -m killers_bot.observer
 """
 import asyncio
+import contextlib
 import json
 import logging
 import os
 import sqlite3
 import sys
+import time
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from . import classifier, confidence_gate, rules_classifier, simulator, strict_open
+from . import (classifier, classify_queue, confidence_gate, rules_classifier,
+               simulator, strict_open)
 
 logger = logging.getLogger(__name__)
-
-# Backoff (seconds) between classify retries (bd Master-Trader-fg0). One entry
-# per retry after the initial failure; when attempts reach
-# MAX_CLASSIFY_ATTEMPTS the row is marked dropped and the loop stops.
-RETRY_DELAYS = (60, 300, 900)
-MAX_CLASSIFY_ATTEMPTS = 4
 
 
 # ── Config ─────────────────────────────────────────────────────────────────
@@ -70,10 +68,13 @@ class Config:
         self.db_path = os.getenv("KILLERS_DB", "/var/lib/killers/state.sqlite")
         self.claude_binary = os.getenv("KILLERS_CLAUDE_BINARY", "claude")
         self.claude_model = os.getenv("KILLERS_CLAUDE_MODEL") or None
-        # Default 200s so the subprocess outlives mt-classify's 180s transport
-        # timeout: mt-classify then reports a clean error (recorded in
-        # classify_failures) instead of being SIGKILLed into a bare timeout.
-        self.claude_timeout = float(os.getenv("KILLERS_CLAUDE_TIMEOUT_SEC", "200"))
+        # 20s = o valor de producao. Latencia medida ago-out/2026 (mensagem ->
+        # classificacao, com a cadeia de resposta): p50 4,5s, p95 9s, p99 14s,
+        # max 19,8s. Com 12s ~1,5% das chamadas estourariam (#95). Fleet
+        # containers running mt-classify override via env (see
+        # mt-observer-entrypoint.sh: 200s to outlive the fallback chain's
+        # 180s transport timeout).
+        self.claude_timeout = float(os.getenv("KILLERS_CLAUDE_TIMEOUT_SEC", "20"))
         self.heartbeat_sec = int(os.getenv("KILLERS_HEARTBEAT_SEC", "60"))
         # Receiver endpoint — when set, observer POSTs each classification.
         # Receiver translates to Freqtrade Futures REST. Leave unset to run
@@ -85,6 +86,15 @@ class Config:
         # the killers token — a missing insiders token must fail loudly (401,
         # logged, not retried) rather than silently cross-authenticate.
         self.receiver_token = os.getenv("KILLERS_RECEIVER_TOKEN", "")
+        # Rotulo do feed nos logs e alertas; o fan-out insiders sobrescreve.
+        self.feed_label = "killers"
+        # Alerta de falha de classificacao (#95). O observer roda no host, onde
+        # o trade-webhook publica 127.0.0.1:8088; mesma rota /test/notify dos
+        # receivers -> @elder_brain_bot. Vazio desliga (so log).
+        # TRADE_WEBHOOK_NOTIFY_TOKEN vai como X-Notify-Token quando definido.
+        self.notify_url = os.getenv("KILLERS_NOTIFY_URL",
+                                    "http://127.0.0.1:8088/test/notify")
+        self.notify_token = os.getenv("TRADE_WEBHOOK_NOTIFY_TOKEN", "").strip()
         # Trial fan-out (bd Master-Trader-krl): capture-only channels stop
         # right after persist_raw. Only _trial_configs sets this; the
         # killers/insiders paths never do.
@@ -103,7 +113,8 @@ class Config:
             self.confidence_gate = confidence_gate.load_config()
         except confidence_gate.GateConfigError as e:
             logger.error("[CONF-GATE] config invalida, gate DESLIGADO: %s", e)
-            self.confidence_gate = confidence_gate.disabled_config()
+            self.confidence_gate = confidence_gate.disabled_config(
+                confidence_gate.INVALID_CONFIG)
 
 
 def _required(name: str) -> str:
@@ -208,51 +219,6 @@ def persist_classification(conn: sqlite3.Connection, classification: dict) -> No
         row,
     )
     _append_revision(conn, "classification_revisions", _CLS_COLS, row)
-    conn.commit()
-
-
-# ── Falhas de classificacao (bd Master-Trader-fg0) ──────────────────────────
-# Uma classificacao que falhou nao e mais drop silencioso: grava-se a causa e
-# o observer reagenda com backoff. Nao ha dedup proprio aqui — o ingresso do
-# receiver ja deduplica por msg_id e persist_classification e INSERT OR
-# REPLACE.
-
-
-def record_classify_failure(conn: sqlite3.Connection, msg_id: int,
-                            error: Optional[dict]) -> None:
-    """Upsert da linha de falha: nova tentativa incrementa `attempts` e volta
-    o estado para pending (uma edicao reprocessada recomeca a contagem de
-    onde esta, sem apagar `first_failed_at`)."""
-    now = datetime.now(timezone.utc).isoformat()
-    conn.execute(
-        "INSERT INTO classify_failures (msg_id, first_failed_at, last_attempt_at, "
-        "attempts, error_class, detail, state) VALUES (?, ?, ?, 1, ?, ?, 'pending') "
-        "ON CONFLICT(msg_id) DO UPDATE SET "
-        "last_attempt_at = excluded.last_attempt_at, "
-        "attempts = attempts + 1, "
-        "error_class = excluded.error_class, "
-        "detail = excluded.detail, "
-        "state = 'pending'",
-        (msg_id, now, now, (error or {}).get("class", "unknown"),
-         (error or {}).get("detail")),
-    )
-    conn.commit()
-
-
-def _resolve_classify_failure(conn: sqlite3.Connection, msg_id: int) -> None:
-    conn.execute(
-        "UPDATE classify_failures SET state = 'resolved', resolved_at = ? "
-        "WHERE msg_id = ?",
-        (datetime.now(timezone.utc).isoformat(), msg_id),
-    )
-    conn.commit()
-
-
-def _drop_classify_failure(conn: sqlite3.Connection, msg_id: int) -> None:
-    conn.execute(
-        "UPDATE classify_failures SET state = 'dropped' WHERE msg_id = ?",
-        (msg_id,),
-    )
     conn.commit()
 
 
@@ -440,183 +406,456 @@ async def build_reply_chain(client, channel_id, conn, msg_dict: dict, depth: int
 
 
 async def process_message(client, channel_id, conn, config, msg_dict: dict, source: str) -> None:
+    """Uma entrega do Telegram (nova, editada ou backfill), ponta a ponta."""
     # Telethon's to_dict() puts message content in the 'message' key, not 'text'.
     # Mirror it onto 'text' for downstream callers (classifier prompt, snippet).
     if not msg_dict.get("text") and msg_dict.get("message"):
         msg_dict["text"] = msg_dict["message"]
-    persist_raw(conn, msg_dict)
-    snippet = (msg_dict.get("text") or "")[:80].replace("\n", " ⏎ ")
-    logger.info("[MSG %s] id=%d %r", source.upper(), msg_dict["id"], snippet)
+    async with _serialized(config, msg_dict["id"]):
+        # Capture-only fan-out (bd Master-Trader-krl): stop right after the
+        # raw insert. Trial formats are unknown by design, so no classifier,
+        # no gate, no receiver. Critically BEFORE classify_queue.begin: a
+        # capture can never reach `done`, so a queue row here would sit
+        # in_progress forever and be re-enqueued by requeue_interrupted at
+        # every startup.
+        if getattr(config, "capture_only", False):
+            persist_raw(conn, msg_dict)
+            logger.info("[MSG %s] id=%d (capture-only) %r", source.upper(),
+                        msg_dict["id"], _snippet(msg_dict))
+            return
+        # #95: a linha da fila entra na MESMA transacao do raw_messages (o
+        # commit do persist_raw confirma as duas). A mensagem so conta como
+        # vista quando a fila chega a `done`; ate la, um reinicio a retoma.
+        classify_queue.begin(conn, msg_dict["id"], fresh=True, commit=False)
+        persist_raw(conn, msg_dict)
+        logger.info("[MSG %s] id=%d %r", source.upper(), msg_dict["id"],
+                    _snippet(msg_dict))
+        await _classify_and_forward(client, channel_id, conn, config, msg_dict, source)
 
-    # Trial channels (bd Master-Trader-krl): the raw row is persisted above;
-    # stop here. No classifier (the format is unknown by design), no gate, no
-    # paper sim, no receiver — measurement precedes any bot.
-    if getattr(config, "capture_only", False):
+
+async def _classify_and_forward(client, channel_id, conn, config, msg_dict: dict,
+                                source: str) -> None:
+    """Classifica, grava, simula e encaminha uma mensagem ja persistida.
+
+    Chamado por `process_message` (entrega do Telegram) e por `retry_due`
+    (fila #95). Toda saida fecha a linha da fila: `done` so depois de 2xx do
+    receiver (ou sem receiver configurado), `retry`/`exhausted` caso
+    contrario. Uma excecao depois do 2xx nunca reagenda.
+    """
+    msg_id = msg_dict["id"]
+    delivered = False
+    try:
+        chain = await build_reply_chain(client, channel_id, conn, msg_dict)
+
+        # FAST-PATH: try the rule parser first. Saves ~7s of Claude latency on
+        # clean OPEN signals. Strict checks inside the parser reject anything
+        # that isn't a complete single-coin open. Claude still runs in shadow
+        # after the receiver POST so any disagreement is visible.
+        text = msg_dict.get("text") or msg_dict.get("message") or ""
+        classification = (
+            strict_open.is_strict_killers_open(text, msg_id)
+            if config.use_fast_path else None
+        )
+        used_fast_path = classification is not None
+        source_label = "rule" if used_fast_path else "claude"
+        if classification is None and getattr(config, "rules_primary", False):
+            # Classificador de regras (#74). Recusa em qualquer ambiguidade; so
+            # decide os tipos em PRIMARY_KINDS. O Claude roda em shadow depois.
+            declared = lookup_declared_targets(conn, text, msg_id)
+            rule_kind, rule_reason = rules_classifier.classify(text, declared)
+            if rule_kind in rules_classifier.PRIMARY_KINDS:
+                classification = rules_classifier.build_classification(
+                    msg_id, text, rule_kind)
+                used_fast_path = True
+                source_label = "rules"
+                logger.info("[RULES] id=%d kind=%s (%s) — bypassing Claude",
+                            msg_id, rule_kind, rule_reason)
+        failures: list = []
+        if used_fast_path and source_label == "rule":
+            logger.info(
+                "[FAST-PATH] id=%d kind=open signal=#%s sym=%s — bypassing Claude",
+                msg_id, classification["signal_id"], classification["symbol"],
+            )
+        elif not used_fast_path:
+            classification = await classifier.classify(
+                msg_dict, chain,
+                binary=config.claude_binary,
+                model=config.claude_model,
+                timeout_sec=config.claude_timeout,
+                template=config.classifier_template,
+                on_failure=failures.append,
+            )
+        if classification is None:
+            await _processing_failed(
+                conn, config, msg_dict,
+                failures[0] if failures else "classifier returned no result")
+            return
+
+        # #95: um `open` que volta pela fila depois que uma mensagem posterior
+        # do MESMO sinal ja foi processada esta superado (o canal fechou ou
+        # mudou o plano enquanto ele estava retido). Grava para auditoria, nao
+        # encaminha, e alerta.
+        if source == RETRY_SOURCE and classification.get("kind") == "open":
+            later = _later_message_for_signal(conn, msg_id, classification)
+            if later is not None:
+                persist_classification(conn, classification)
+                await _stale_open_not_forwarded(conn, config, msg_dict,
+                                                classification, later)
+                return
+
+        # Gate de confianca em SHADOW (#65): so para o que o Claude decidiu. As
+        # regras sao deterministicas (confidence fixo em 1.0) e nao sao avaliadas.
+        # Grava o veredito e segue — o encaminhamento abaixo NAO depende dele.
+        gate_cfg = getattr(config, "confidence_gate", None)
+        if source_label == "claude" and gate_cfg is not None:
+            record_confidence_gate(conn, msg_dict, classification, source_label, gate_cfg)
+
+        persist_classification(conn, classification)
+        kind = classification.get("kind")
+        sym = classification.get("symbol")
+        sid = classification.get("signal_id")
+        conf = classification.get("confidence", 0)
+        logger.info("[CLASSIFY] id=%d kind=%s signal=#%s sym=%s conf=%.2f source=%s",
+                    msg_id, kind, sid, sym, conf, source_label)
+
+        # Shadow observacional do classificador de regras (#62). Puro regex, roda
+        # em microssegundos, e nao toca no que segue para o simulador/receiver.
+        if getattr(config, "shadow_rules", False):
+            record_signal_targets(conn, msg_dict, classification)
+            # Quando a propria regra decidiu, comparar regra com regra nao diz
+            # nada: o veredito util e o do Claude em shadow, gravado por
+            # _shadow_classify.
+            if source_label != "rules":
+                shadow_rules(conn, msg_dict, classification, source_label)
+
+        # Route into paper simulator (local audit trail)
+        if kind == "open":
+            simulator.open_paper_position(conn, msg_dict, classification)
+        elif kind in ("close_partial", "close_full", "move_sl"):
+            simulator.update_paper_position(conn, msg_dict, classification)
+        elif kind == "increase":
+            logger.info("[INCREASE] not modeled in paper sim yet")
+        # else: chat — already logged via [CLASSIFY], nothing to do
+
+        # Forward to receiver for real Freqtrade Futures dry-run execution.
+        # Receiver is the source of truth for actual trades; paper sim stays
+        # for audit + offline comparison.
+        if config.receiver_url:
+            # #95: o corpo exato vai para a fila ANTES do POST. Se a entrega
+            # falhar (ou o processo cair no meio dela), a nova tentativa
+            # reenvia este corpo, sem reclassificar.
+            classify_queue.set_payload(conn, msg_id, _receiver_body(msg_dict, classification))
+            err = await _post_to_receiver(config.receiver_url, msg_dict, classification,
+                                          getattr(config, "receiver_token", ""))
+            if err is not None:
+                await _processing_failed(conn, config, msg_dict,
+                                         f"receiver delivery failed: {err}", DELIVERY)
+                return
+        delivered = True
+        await _message_done(conn, config, msg_dict, classification)
+    except Exception as e:
+        if delivered:
+            logger.exception("[PIPELINE] id=%s falhou DEPOIS do 2xx do receiver "
+                             "— fechada, NAO sera reenviada", msg_id)
+            classify_queue.mark_done(
+                conn, msg_id,
+                note=f"exception after delivery: {type(e).__name__}: {e}"[:500])
+            return
+        logger.exception("[PIPELINE] id=%s falhou antes da entrega — volta "
+                         "para a fila", msg_id)
+        await _processing_failed(conn, config, msg_dict,
+                                 f"exception: {type(e).__name__}: {e}")
         return
-
-    chain = await build_reply_chain(client, channel_id, conn, msg_dict)
-    error: Optional[dict] = None
-
-    # FAST-PATH: try the rule parser first. Saves ~7s of Claude latency on
-    # clean OPEN signals. Strict checks inside the parser reject anything
-    # that isn't a complete single-coin open. Claude still runs in shadow
-    # after the receiver POST so any disagreement is visible.
-    text = msg_dict.get("text") or msg_dict.get("message") or ""
-    classification = (
-        strict_open.is_strict_killers_open(text, msg_dict["id"])
-        if config.use_fast_path else None
-    )
-    used_fast_path = classification is not None
-    source_label = "rule" if used_fast_path else "claude"
-    if classification is None and getattr(config, "rules_primary", False):
-        # Classificador de regras (#74). Recusa em qualquer ambiguidade; so
-        # decide os tipos em PRIMARY_KINDS. O Claude roda em shadow depois.
-        declared = lookup_declared_targets(conn, text, msg_dict["id"])
-        rule_kind, rule_reason = rules_classifier.classify(text, declared)
-        if rule_kind in rules_classifier.PRIMARY_KINDS:
-            classification = rules_classifier.build_classification(
-                msg_dict["id"], text, rule_kind)
-            used_fast_path = True
-            source_label = "rules"
-            logger.info("[RULES] id=%d kind=%s (%s) — bypassing Claude",
-                        msg_dict["id"], rule_kind, rule_reason)
-    if used_fast_path and source_label == "rule":
-        logger.info(
-            "[FAST-PATH] id=%d kind=open signal=#%s sym=%s — bypassing Claude",
-            msg_dict["id"], classification["signal_id"], classification["symbol"],
-        )
-    elif not used_fast_path:
-        classification, error = await classifier.classify_detailed(
-            msg_dict, chain,
-            binary=config.claude_binary,
-            model=config.claude_model,
-            timeout_sec=config.claude_timeout,
-            template=config.classifier_template,
-        )
-    if classification is None:
-        # Falha de classificacao nao e mais drop silencioso (bd
-        # Master-Trader-fg0): grava a causa e agenda o retry com backoff.
-        record_classify_failure(conn, msg_dict["id"], error)
-        logger.warning("[CLASSIFY FAIL] id=%d skipping downstream", msg_dict["id"])
-        asyncio.create_task(
-            _retry_classify(client, channel_id, conn, config, msg_dict, 0),
-            name=f"classify-retry-{msg_dict['id']}-0",
-        )
-        return
-
-    await _process_classified(client, conn, config, msg_dict, classification,
-                              source_label, chain=chain,
-                              used_fast_path=used_fast_path)
-
-
-async def _process_classified(client, conn: sqlite3.Connection, config,
-                              msg_dict: dict, classification: dict,
-                              source_label: str, chain: Optional[list] = None,
-                              used_fast_path: bool = False) -> None:
-    """Everything downstream of a successful classification: gate verdict,
-    persistence, paper sim, receiver forward, shadow-classify spawn. Shared
-    by the live handler and the classify retry path (bd Master-Trader-fg0)."""
-    # Gate de confianca em SHADOW (#65): so para o que o Claude decidiu. As
-    # regras sao deterministicas (confidence fixo em 1.0) e nao sao avaliadas.
-    # Grava o veredito e segue — o encaminhamento abaixo NAO depende dele.
-    gate_cfg = getattr(config, "confidence_gate", None)
-    if source_label == "claude" and gate_cfg is not None:
-        record_confidence_gate(conn, msg_dict, classification, source_label, gate_cfg)
-
-    persist_classification(conn, classification)
-    kind = classification.get("kind")
-    sym = classification.get("symbol")
-    sid = classification.get("signal_id")
-    conf = classification.get("confidence", 0)
-    logger.info("[CLASSIFY] id=%d kind=%s signal=#%s sym=%s conf=%.2f source=%s",
-                msg_dict["id"], kind, sid, sym, conf, source_label)
-
-    # Shadow observacional do classificador de regras (#62). Puro regex, roda
-    # em microssegundos, e nao toca no que segue para o simulador/receiver.
-    if getattr(config, "shadow_rules", False):
-        record_signal_targets(conn, msg_dict, classification)
-        # Quando a propria regra decidiu, comparar regra com regra nao diz
-        # nada: o veredito util e o do Claude em shadow, gravado por
-        # _shadow_classify.
-        if source_label != "rules":
-            shadow_rules(conn, msg_dict, classification, source_label)
-
-    # Route into paper simulator (local audit trail)
-    if kind == "open":
-        simulator.open_paper_position(conn, msg_dict, classification)
-    elif kind in ("close_partial", "close_full", "move_sl"):
-        simulator.update_paper_position(conn, msg_dict, classification)
-    elif kind == "increase":
-        logger.info("[INCREASE] not modeled in paper sim yet")
-    # else: chat — already logged via [CLASSIFY], nothing to do
-
-    # Forward to receiver for real Freqtrade Futures dry-run execution.
-    # Receiver is the source of truth for actual trades; paper sim stays
-    # for audit + offline comparison.
-    if config.receiver_url:
-        await _post_to_receiver(config.receiver_url, msg_dict, classification,
-                                getattr(config, "receiver_token", ""))
 
     # Shadow Claude after the fast-path decision is already in flight. Logs
     # disagreement but never blocks the receiver POST. Skip if Claude was
     # already the primary classifier (no shadow needed).
     if used_fast_path:
         asyncio.create_task(
-            _shadow_classify(msg_dict, chain or [], classification, config,
+            _shadow_classify(msg_dict, chain, classification, config,
                              conn=conn, source_label=source_label),
-            name=f"shadow-classify-{msg_dict['id']}",
+            name=f"shadow-classify-{msg_id}",
         )
 
 
-async def _retry_classify(client, channel_id, conn: sqlite3.Connection,
-                          config, msg_dict: dict, attempt: int) -> None:
-    """One backoff step of the classify retry loop (bd Master-Trader-fg0).
+# ── Fila de reclassificacao + alerta (#95) ─────────────────────────────────
 
-    Sleeps RETRY_DELAYS[attempt], re-classifies (reply chain rebuilt like the
-    main path — an earlier retry may have persisted the parent by now), and on
-    success marks the failure row resolved and runs the normal downstream
-    processing. On failure increments attempts and schedules the next delay;
-    at MAX_CLASSIFY_ATTEMPTS the row is marked dropped. Never raises: an
-    exception is logged and the row stays pending (visible, restartable)."""
-    msg_id = msg_dict["id"]
+RETRY_SOURCE = "retry"
+RETRY_POLL_SEC = 15
+ALERTS_PER_HOUR = 6
+
+
+@contextlib.asynccontextmanager
+async def _serialized(config, msg_id: int):
+    """Uma mensagem por vez: a edicao ao vivo e a nova tentativa da fila nunca
+    processam o mesmo msg_id ao mesmo tempo (nem encaminham versoes trocadas)."""
+    locks = getattr(config, "_msg_locks", None)
+    if locks is None:
+        locks = {}
+        config._msg_locks = locks
+    entry = locks.get(msg_id)
+    if entry is None:
+        entry = locks[msg_id] = [asyncio.Lock(), 0]
+    entry[1] += 1
     try:
-        await asyncio.sleep(RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)])
-        chain = await build_reply_chain(client, channel_id, conn, msg_dict)
-        classification, error = await classifier.classify_detailed(
-            msg_dict, chain,
-            binary=config.claude_binary,
-            model=config.claude_model,
-            timeout_sec=config.claude_timeout,
-            template=config.classifier_template,
-        )
-        if classification is not None:
-            _resolve_classify_failure(conn, msg_id)
-            logger.info("[CLASSIFY RETRY] id=%d resolved on attempt %d",
-                        msg_id, attempt + 1)
-            await _process_classified(client, conn, config, msg_dict,
-                                      classification, "claude")
+        async with entry[0]:
+            yield
+    finally:
+        entry[1] -= 1
+        if entry[1] == 0:
+            locks.pop(msg_id, None)
+
+
+def _label(config) -> str:
+    return getattr(config, "feed_label", None) or "killers"
+
+
+def _snippet(msg_dict: dict) -> str:
+    return (msg_dict.get("text") or msg_dict.get("message") or "")[:80].replace("\n", " ⏎ ")
+
+
+async def _notify(url: str, token: str, text: str) -> bool:
+    """POST no /test/notify do trade-webhook. True so se entregue. Nunca levanta."""
+    import aiohttp
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["X-Notify-Token"] = token
+    try:
+        async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=5)) as s:
+            async with s.post(url, data=json.dumps({"text": text}),
+                              headers=headers) as r:
+                await r.read()
+                if r.status == 401:
+                    logger.warning("[ALERT] notify recusado (401): "
+                                   "TRADE_WEBHOOK_NOTIFY_TOKEN ausente ou diferente")
+                return 200 <= r.status < 300
+    except Exception as e:
+        logger.warning("[ALERT] notify falhou: %s", e)
+        return False
+
+
+async def _alert(config, text: str) -> bool:
+    """Alerta operacional, limitado a ALERTS_PER_HOUR por feed: um login
+    expirado falha toda chamada, e cada mensagem geraria dois alertas. O
+    excedente vai so para o log e e contado no proximo alerta enviado."""
+    url = getattr(config, "notify_url", "") or ""
+    if not url:
+        logger.error("[ALERT] KILLERS_NOTIFY_URL vazio — alerta so no log: %s", text)
+        return False
+    window = getattr(config, "_alert_times", None)
+    if window is None:
+        window = config._alert_times = deque()
+    now = time.monotonic()
+    while window and now - window[0] > 3600:
+        window.popleft()
+    if len(window) >= ALERTS_PER_HOUR:
+        config._alerts_suppressed = getattr(config, "_alerts_suppressed", 0) + 1
+        logger.error("[ALERT SUPPRESSED] limite de %d/h: %s", ALERTS_PER_HOUR, text)
+        return False
+    suppressed = getattr(config, "_alerts_suppressed", 0)
+    if suppressed:
+        text += (f"\n(+{suppressed} alert(s) suppressed by the {ALERTS_PER_HOUR}/h "
+                 "limit — see observer.log)")
+        config._alerts_suppressed = 0
+    window.append(now)
+    return await _notify(url, getattr(config, "notify_token", "") or "", text)
+
+
+def _queue_summary(conn) -> str:
+    c = classify_queue.counts(conn)
+    return (f"queue: {c.get(classify_queue.RETRY, 0)} retrying, "
+            f"{c.get(classify_queue.EXHAUSTED, 0)} given up")
+
+
+CLASSIFICATION = "classification"
+DELIVERY = "delivery"
+
+
+def _receiver_body(msg: dict, classification: dict) -> str:
+    """Corpo do POST /event. Mesmo formato que `_post_to_receiver` envia."""
+    return json.dumps({"msg": msg, "classification": classification}, default=str)
+
+
+async def _processing_failed(conn, config, msg_dict: dict, reason: str,
+                             stage: str = CLASSIFICATION) -> None:
+    """O receiver NAO confirmou a mensagem (classificacao falhou, ou a entrega
+    nao recebeu 2xx): reagenda com backoff ou desiste, e alerta na
+    `alert_after`-esima falha e ao desistir. Um 4xx deterministico (401, 422)
+    segue o mesmo teto: alerta, tenta de novo (o operador pode corrigir o
+    token nesse meio tempo) e para em `exhausted`."""
+    msg_id = msg_dict["id"]
+    max_attempts = int(getattr(config, "classify_max_attempts",
+                               classify_queue.DEFAULT_MAX_ATTEMPTS))
+    alert_after = int(getattr(config, "classify_alert_after",
+                              classify_queue.DEFAULT_ALERT_AFTER))
+    f = classify_queue.record_failure(conn, msg_id, reason, max_attempts=max_attempts)
+    label = _label(config)
+    tag = "[DELIVERY FAIL]" if stage == DELIVERY else "[CLASSIFY FAIL]"
+    if f.state == classify_queue.EXHAUSTED:
+        replay = ("python3 killers_bot/tools/requeue_classify.py --db "
+                  f"{getattr(config, 'db_path', None) or '<db>'} {msg_id}")
+        logger.error("%s id=%d attempt %d/%d: %s — GAVE UP, receiver never "
+                     "confirmed. Replay: %s", tag, msg_id, f.attempts, max_attempts,
+                     reason, replay)
+        what = f"GAVE UP — the receiver never confirmed it. Replay: `{replay}`"
+    else:
+        wait = max(int(f.next_retry_at - time.time()), 0)
+        logger.warning("%s id=%d attempt %d/%d: %s — retry in %ds", tag,
+                       msg_id, f.attempts, max_attempts, reason, wait)
+        what = f"next retry in {wait}s"
+    if f.state == classify_queue.EXHAUSTED or f.attempts == alert_after:
+        text = (f"⚠️ [{label}-observer] {stage} FAILED · msg_id={msg_id} · "
+                f"attempt {f.attempts}/{max_attempts}\n"
+                f"reason: {reason[:200]}\n{what}\n{_queue_summary(conn)}\n"
+                f"text: «{_snippet(msg_dict)}»")
+        if await _alert(config, text):
+            classify_queue.set_alerted(conn, msg_id)
+
+
+async def _message_done(conn, config, msg_dict: dict, classification: dict) -> None:
+    attempts, alerted = classify_queue.mark_done(conn, msg_dict["id"])
+    if alerted:
+        # O operador foi avisado da falha; avisa que nao ha nada a reprocessar.
+        after = f" after {attempts} failed attempt(s)" if attempts else ""
+        await _alert(config,
+                     f"✅ [{_label(config)}-observer] msg_id={msg_dict['id']} "
+                     f"({classification.get('kind')}) confirmed by the receiver{after} — "
+                     f"nothing to replay. {_queue_summary(conn)}")
+
+
+def _norm_symbol(sym) -> str:
+    s = str(sym or "").upper().replace("$", "").strip().split("/")[0]
+    return s[:-4] if s.endswith("USDT") and len(s) > 4 else s
+
+
+def _later_message_for_signal(conn, msg_id: int, classification: dict):
+    """Primeira mensagem POSTERIOR, ja classificada e nao-chat, sobre o mesmo
+    sinal (simbolo, e signal_id quando os dois tem). Devolve (msg_id, kind)."""
+    sym = _norm_symbol(classification.get("symbol"))
+    if not sym:
+        return None
+    sid = classification.get("signal_id")
+    for later_id, kind, later_sid, later_sym in conn.execute(
+            "SELECT msg_id, kind, signal_id, symbol FROM classifications "
+            "WHERE msg_id > ? AND kind != 'chat' ORDER BY msg_id", (msg_id,)):
+        if _norm_symbol(later_sym) != sym:
+            continue
+        if sid is not None and later_sid is not None and later_sid != sid:
+            continue
+        return later_id, kind
+    return None
+
+
+async def _stale_open_not_forwarded(conn, config, msg_dict: dict,
+                                    classification: dict, later) -> None:
+    msg_id = msg_dict["id"]
+    note = (f"stale open NOT forwarded: msg {later[0]} ({later[1]}) on the same "
+            "signal was processed first")
+    logger.error("[RETRY STALE OPEN] id=%d %s %s — %s", msg_id,
+                 classification.get("symbol"), classification.get("direction"), note)
+    classify_queue.mark_done(conn, msg_id, note=note)
+    await _alert(config,
+                 f"⚠️ [{_label(config)}-observer] msg_id={msg_id} recovered as OPEN "
+                 f"{classification.get('symbol')} {classification.get('direction')} "
+                 f"but {note}. Decide manually.")
+
+
+def _load_raw(conn, msg_id: int) -> Optional[dict]:
+    """A versao mais recente da mensagem, como o pipeline a recebeu."""
+    row = conn.execute("SELECT raw_json, text FROM raw_messages WHERE msg_id = ?",
+                       (msg_id,)).fetchone()
+    if row is None:
+        return None
+    try:
+        d = json.loads(row[0])
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(d, dict):
+        return None
+    d["id"] = msg_id
+    if not d.get("text"):
+        d["text"] = row[1] or d.get("message") or ""
+    return d
+
+
+async def _redeliver(conn, config, msg_id: int, payload: str) -> None:
+    """Nova tentativa de ENTREGA de uma mensagem ja classificada. O receiver
+    deduplica por msg_id (`open_msg_id` UNIQUE; claim UNIQUE(pos_id, msg_id,
+    kind) antes de qualquer await em close/signal_update; move_sl nao afrouxa),
+    entao reenviar depois de um resultado desconhecido age no maximo uma vez."""
+    try:
+        body = json.loads(payload)
+        msg, cls = body["msg"], body["classification"]
+        if not isinstance(msg, dict) or not isinstance(cls, dict):
+            raise ValueError("msg/classification must be objects")
+    except (TypeError, ValueError, KeyError) as e:
+        classify_queue.give_up(conn, msg_id, f"stored payload unreadable: {e}")
+        logger.error("[RETRY DELIVERY] id=%d payload ilegivel — desistiu: %s", msg_id, e)
+        await _alert(config, f"⚠️ [{_label(config)}-observer] msg_id={msg_id} "
+                             "could not be redelivered: stored payload unreadable")
+        return
+    msg["id"] = msg_id
+    if cls.get("kind") == "open":
+        later = _later_message_for_signal(conn, msg_id, cls)
+        if later is not None:
+            await _stale_open_not_forwarded(conn, config, msg, cls, later)
             return
-        record_classify_failure(conn, msg_id, error)
-        row = conn.execute(
-            "SELECT attempts FROM classify_failures WHERE msg_id = ?",
-            (msg_id,),
-        ).fetchone()
-        attempts = row[0] if row else attempt + 1
-        if attempts >= MAX_CLASSIFY_ATTEMPTS:
-            _drop_classify_failure(conn, msg_id)
-            logger.error("[CLASSIFY RETRY] id=%d DROPPED after %d attempts: %s",
-                         msg_id, attempts, (error or {}).get("detail"))
-            return
-        logger.warning("[CLASSIFY RETRY] id=%d attempt %d failed (%s) — retrying",
-                       msg_id, attempt + 1, (error or {}).get("class", "unknown"))
-        asyncio.create_task(
-            _retry_classify(client, channel_id, conn, config, msg_dict,
-                            attempt + 1),
-            name=f"classify-retry-{msg_id}-{attempt + 1}",
-        )
-    except Exception:
-        logger.exception("[CLASSIFY RETRY] id=%s retry crashed — row stays pending",
-                         msg_id)
+    if not config.receiver_url:
+        classify_queue.mark_done(conn, msg_id, note="receiver disabled; not delivered")
+        return
+    logger.info("[RETRY DELIVERY] id=%d kind=%s", msg_id, cls.get("kind"))
+    err = await _post_to_receiver(config.receiver_url, msg, cls,
+                                  getattr(config, "receiver_token", ""))
+    if err is not None:
+        await _processing_failed(conn, config, msg,
+                                 f"receiver delivery failed: {err}", DELIVERY)
+        return
+    await _message_done(conn, config, msg, cls)
+
+
+async def retry_due(client, channel_id, conn, config,
+                    now: Optional[float] = None) -> int:
+    """Uma passada da fila: reprocessa as mensagens com tentativa vencida,
+    da mais antiga para a mais nova. Devolve quantas foram reprocessadas."""
+    now = time.time() if now is None else now
+    processed = 0
+    for msg_id in classify_queue.due(conn, now):
+        async with _serialized(config, msg_id):
+            # Uma entrega ao vivo pode ter resolvido ou reagendado esta
+            # mensagem enquanto esperavamos a vez.
+            if not classify_queue.is_due(conn, msg_id, now):
+                continue
+            payload = classify_queue.get_payload(conn, msg_id)
+            if payload is not None:
+                # Ja classificada; falta o 2xx do receiver. Reenvia o MESMO
+                # corpo, sem reclassificar.
+                classify_queue.begin(conn, msg_id, fresh=False)
+                await _redeliver(conn, config, msg_id, payload)
+                processed += 1
+                continue
+            msg_dict = _load_raw(conn, msg_id)
+            if msg_dict is None:
+                classify_queue.give_up(conn, msg_id, "raw message missing or unreadable")
+                logger.error("[RETRY] id=%d sem mensagem crua legivel — desistiu", msg_id)
+                await _alert(config, f"⚠️ [{_label(config)}-observer] msg_id={msg_id} "
+                                     "could not be retried: raw message missing")
+                continue
+            classify_queue.begin(conn, msg_id, fresh=False)
+            logger.info("[RETRY] id=%d %r", msg_id, _snippet(msg_dict))
+            await _classify_and_forward(client, channel_id, conn, config,
+                                        msg_dict, RETRY_SOURCE)
+            processed += 1
+    return processed
+
+
+async def _retry_loop(client, channel_id, conn, config, label: str) -> None:
+    while True:
+        try:
+            await retry_due(client, channel_id, conn, config)
+        except Exception:
+            logger.exception("[%s] passada da fila de retry falhou — segue", label)
+        await asyncio.sleep(RETRY_POLL_SEC)
 
 
 def _record_claude_shadow(conn: sqlite3.Connection, msg: dict, rule_cls: dict,
@@ -690,13 +929,18 @@ async def _shadow_classify(msg_dict: dict, chain: list, fast_path: dict,
 
 
 async def _post_to_receiver(url: str, msg: dict, classification: dict,
-                            token: str = "") -> None:
+                            token: str = "") -> Optional[str]:
     """POST classified event to killers-receiver with bounded retry.
+
+    Returns None ONLY when the receiver answered 2xx; otherwise a one-line
+    failure reason. The caller (#95) keeps the message queued until a 2xx:
+    the stored body is re-sent later with backoff, up to the queue's attempt
+    cap, and the receiver dedupes by msg_id. Never raises.
 
     `token` is the receiver's required ingress bearer. An empty token still
     posts — the receiver answers 401, which the 4xx branch below logs at ERROR
-    and does NOT retry. That is the intended shape: a misconfigured token is a
-    loud, immediate, non-trading failure rather than a silent retry storm.
+    and does NOT retry here. A misconfigured token is a loud, non-trading
+    failure: the queue alerts and stops at its cap instead of a retry storm.
 
     Bug discovered 2026-05-27 19:38: receiver crashed 500 on a real signal,
     observer logged and moved on, msg lost silently. Retry policy:
@@ -720,7 +964,7 @@ async def _post_to_receiver(url: str, msg: dict, classification: dict,
     except Exception as e:
         logger.error("[RECV] payload serialize failed msg_id=%s: %s",
                      msg.get("id"), e)
-        return
+        return f"payload serialize failed: {e}"
 
     headers = {"Content-Type": "application/json"}
     if token:
@@ -747,16 +991,17 @@ async def _post_to_receiver(url: str, msg: dict, classification: dict,
                                     r.status, msg.get("id"),
                                     classification.get("kind"),
                                     body[:200], attempt)
-                        return
+                        return None
                     if 400 <= r.status < 500 and r.status != 429:
-                        # Client error — payload broken, retrying won't help
+                        # Client error — no fast retry here; the queue
+                        # retries with backoff up to its cap and alerts.
                         logger.error(
                             "[RECV] %d msg_id=%s kind=%s body=%s — "
-                            "4xx, NOT retrying",
+                            "4xx, no fast retry",
                             r.status, msg.get("id"),
                             classification.get("kind"), body[:200],
                         )
-                        return
+                        return f"HTTP {r.status}: {body[:200]}"
                     # 5xx or 429 — retry
                     last_err = f"HTTP {r.status}: {body[:200]}"
                     logger.warning(
@@ -771,12 +1016,13 @@ async def _post_to_receiver(url: str, msg: dict, classification: dict,
                 msg.get("id"), attempt, len(backoffs), e,
             )
 
-    # Exhausted retries
+    # Exhausted fast retries — the caller re-queues the message.
     logger.error(
-        "[RECV] EXHAUSTED %d retries for msg_id=%s kind=%s — message LOST. "
-        "Last error: %s",
+        "[RECV] EXHAUSTED %d fast retries for msg_id=%s kind=%s — back to the "
+        "queue. Last error: %s",
         len(backoffs), msg.get("id"), classification.get("kind"), last_err,
     )
+    return f"exhausted {len(backoffs)} fast attempts; last: {last_err}"
 
 
 # ── Main loop ──────────────────────────────────────────────────────────────
@@ -801,6 +1047,13 @@ async def _setup_channel(client, events, conn: sqlite3.Connection,
                     label, config.channel_username, channel,
                     getattr(ent, "title", "?"), config.receiver_url)
 
+    # #95: o que ficou `in_progress` morreu com o processo anterior. Volta para
+    # a fila antes do backfill; a passada abaixo o retoma de imediato.
+    interrupted = classify_queue.requeue_interrupted(conn)
+    if interrupted:
+        logger.warning("[%s] %d mensagem(ns) interrompida(s) pelo reinicio "
+                       "voltam para a fila", label, interrupted)
+
     if backfill:
         last_id = last_msg_id(conn)
         if last_id:
@@ -822,6 +1075,12 @@ async def _setup_channel(client, events, conn: sqlite3.Connection,
     async def _on_edit(event):
         await _handle(event, "edited")
 
+    # Fila de reclassificacao (#95), uma por feed. A referencia fica no config
+    # para a task nao ser coletada.
+    config._retry_task = asyncio.create_task(
+        _retry_loop(client, channel, conn, config, label),
+        name=f"classify-retry-{label}")
+
 
 def _insiders_config() -> "Optional[Config]":
     """Config for the INSIDERS fan-out, built from INSIDERS_* env and reusing the
@@ -835,6 +1094,7 @@ def _insiders_config() -> "Optional[Config]":
     ins.channel_username = None
     ins.receiver_url = os.getenv("INSIDERS_RECEIVER_URL", "http://127.0.0.1:8090/event")
     ins.receiver_token = os.getenv("INSIDERS_RECEIVER_TOKEN", "")
+    ins.feed_label = "insiders"
     ins.db_path = os.getenv("INSIDERS_OBSERVER_DB", "/home/ubuntu/insiders-bot/state.sqlite")
     # Dennis / Market Mastery format ≠ Killers VIP. Use the insiders-tuned prompt
     # and disable the Killers-only strict-open rule parser (it would never match
@@ -856,7 +1116,7 @@ def _trial_configs() -> "list[tuple[str, Config]]":
     TRIAL_CHANNELS=name:-1001655061968[,name:-100...] subscribes to extra
     channels on the SAME session/client. Each gets its own DB under the same
     directory as KILLERS_DB (trial-<name>-state.sqlite) and NEVER a receiver:
-    raw capture only, no classifier, no paper sim — the formats are unknown
+    raw capture only, no classifier, no paper sim; the formats are unknown
     by design and a channel earns a tuned classifier (and later a bot) only
     after its capture is measured. Bad entries are logged and skipped: config
     noise must not take down the feeds that already trade.
@@ -871,7 +1131,7 @@ def _trial_configs() -> "list[tuple[str, Config]]":
         name, sep, cid = part.partition(":")
         name, cid = name.strip(), cid.strip()
         if not sep or not name or not cid.lstrip("-").isdigit():
-            logger.error("[trial] bad TRIAL_CHANNELS entry %r — skipped", part)
+            logger.error("[trial] bad TRIAL_CHANNELS entry %r skipped", part)
             continue
         t = Config()                     # re-reads shared api/session env
         t.channel_id_override = cid
@@ -914,7 +1174,7 @@ async def run(config: Config, conn: sqlite3.Connection) -> None:
         logger.exception("[insiders] fan-out setup FAILED — killers feed unaffected")
 
     # Optional TRIAL fan-outs (bd Master-Trader-krl): capture-only channels
-    # measured before any bot exists. Same fault isolation as insiders — a
+    # measured before any bot exists. Same fault isolation as insiders: a
     # trial channel that fails to resolve is logged, never fatal.
     for name, t in _trial_configs():
         try:
@@ -929,7 +1189,8 @@ async def run(config: Config, conn: sqlite3.Connection) -> None:
         while True:
             try:
                 await asyncio.wait_for(client.get_me(), timeout=5.0)
-                logger.info("[HB] alive — last_msg_id=%s", last_msg_id(conn))
+                logger.info("[HB] alive — last_msg_id=%s classify_queue=%s",
+                            last_msg_id(conn), classify_queue.counts(conn))
             except Exception as e:
                 logger.error("[HB] auth check failed: %s", e)
             await asyncio.sleep(config.heartbeat_sec)

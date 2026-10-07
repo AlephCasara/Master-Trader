@@ -18,7 +18,7 @@ accounts must not be counted twice. Historical paper results, live realized equi
 and current unrealized P&L are distinct measurements. Planned targets are not
 exchange orders; a reported bot stop is not independent exchange verification.
 Do not invent missing telemetry or mark-to-market history. The dashboard provides authenticated, explicitly confirmed full-position close
-requests. It does not autonomously change allocations or orders. Source edits and network-free tests run
+requests and cancellation of a resting entry order. It does not autonomously change allocations or orders. Source edits and network-free tests run
 locally; live runtime remains on the VPS under RUNTIME.md.
 
 ## Product Principles
