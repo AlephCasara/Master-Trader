@@ -12,7 +12,6 @@ Endpoints:
   /api/candles/{key}   OHLC candles for current open trade pairs
   /api/killers/state   killers copy-trader paper-sim state (SQLite)
   /api/backend_health  classifier backend heartbeat probe history
-  /api/strategy_notes  strategy explainer content (served, never fabricated)
   /healthz             liveness
 """
 
@@ -1602,9 +1601,6 @@ async def _poll_bot(client: httpx.AsyncClient, bot: dict) -> dict:
                 "close_rate": t.get("close_rate"),
                 "profit_pct": t.get("profit_pct"),
                 "profit_abs": t.get("profit_abs"),
-                "stake_amount": t.get("stake_amount"),
-                "fee_open_cost": t.get("fee_open_cost"),
-                "fee_close_cost": t.get("fee_close_cost"),
                 "exit_reason": t.get("exit_reason"),
                 "trade_duration": t.get("trade_duration"),
             }
@@ -2062,22 +2058,6 @@ async def api_backend_health():
     return JSONResponse(_heartbeat_summary())
 
 
-_STRATEGY_NOTES_PATH = Path(__file__).parent / "strategy_notes.json"
-
-
-@app.get("/api/strategy_notes")
-async def api_strategy_notes():
-    """Strategy explainer content; {} when the notes file is absent or invalid.
-
-    The file is small and re-read per request (no caching) so a redeployed
-    explainer shows up without a dashboard restart.
-    """
-    try:
-        return JSONResponse(json.loads(_STRATEGY_NOTES_PATH.read_text()))
-    except (FileNotFoundError, json.JSONDecodeError):
-        return JSONResponse({})
-
-
 def _bot_meta(key: str) -> dict | None:
     for b in BOTS:
         if b["key"] == key:
@@ -2418,7 +2398,6 @@ async def api_closed_trades():
                 "stoploss_pct": stoploss_pct * 100,
                 "profit_pct": t.get("profit_pct"),
                 "profit_abs": t.get("profit_abs"),
-                "stake_amount": t.get("stake_amount"),
                 "exit_reason": t.get("exit_reason"),
                 "duration_min": t.get("trade_duration"),
                 "is_win": (t.get("profit_abs") or 0) > 0,

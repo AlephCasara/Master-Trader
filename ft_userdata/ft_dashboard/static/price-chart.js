@@ -6087,126 +6087,6 @@
   function Wn(t, i) {
     return Fn(t, new es(), es.ld(i));
   }
-  var Un = class extends _n {
-    constructor(t, i) {
-      super(t, i, true);
-    }
-    fg(t, i, s) {
-      i.uu(this.rg, b(this.hg)), t.Ul(this.rg, s, b(this.hg));
-    }
-    Zg(t, i) {
-      return { wt: t, gt: i, _t: NaN, ut: NaN };
-    }
-    cg() {
-      const t = this.Jn.Rh();
-      this.rg = this.Jn.Xs().Hr().map(((i) => {
-        const s = i.Wt[3];
-        return this.Gg(i.Re, s, t);
-      }));
-    }
-  };
-  function $n(t, i, s, n, e3, r2, h2) {
-    if (0 === i.length || n.from >= i.length || n.to <= 0) return;
-    const { context: a2, horizontalPixelRatio: l2, verticalPixelRatio: o2 } = t, _2 = i[n.from];
-    let u2 = r2(t, _2), c2 = _2;
-    if (n.to - n.from < 2) {
-      const i2 = e3 / 2;
-      a2.beginPath();
-      const s2 = { _t: _2._t - i2, ut: _2.ut }, n2 = { _t: _2._t + i2, ut: _2.ut };
-      a2.moveTo(s2._t * l2, s2.ut * o2), a2.lineTo(n2._t * l2, n2.ut * o2), h2(t, u2, s2, n2);
-    } else {
-      const e4 = (i2, s2) => {
-        h2(t, u2, c2, s2), a2.beginPath(), u2 = i2, c2 = s2;
-      };
-      let d2 = c2;
-      a2.beginPath(), a2.moveTo(_2._t * l2, _2.ut * o2);
-      for (let h3 = n.from + 1; h3 < n.to; ++h3) {
-        d2 = i[h3];
-        const n2 = r2(t, d2);
-        switch (s) {
-          case 0:
-            a2.lineTo(d2._t * l2, d2.ut * o2);
-            break;
-          case 1:
-            a2.lineTo(d2._t * l2, i[h3 - 1].ut * o2), n2 !== u2 && (e4(n2, d2), a2.lineTo(d2._t * l2, i[h3 - 1].ut * o2)), a2.lineTo(d2._t * l2, d2.ut * o2);
-            break;
-          case 2: {
-            const [t2, s2] = Kn(i, h3 - 1, h3);
-            a2.bezierCurveTo(t2._t * l2, t2.ut * o2, s2._t * l2, s2.ut * o2, d2._t * l2, d2.ut * o2);
-            break;
-          }
-        }
-        1 !== s && n2 !== u2 && (e4(n2, d2), a2.moveTo(d2._t * l2, d2.ut * o2));
-      }
-      (c2 !== d2 || c2 === d2 && 1 === s) && h2(t, u2, c2, d2);
-    }
-  }
-  var qn = 6;
-  function Yn(t, i) {
-    return { _t: t._t - i._t, ut: t.ut - i.ut };
-  }
-  function jn(t, i) {
-    return { _t: t._t / i, ut: t.ut / i };
-  }
-  function Kn(t, i, s) {
-    const n = Math.max(0, i - 1), e3 = Math.min(t.length - 1, s + 1);
-    var r2, h2;
-    return [(r2 = t[i], h2 = jn(Yn(t[s], t[n]), qn), { _t: r2._t + h2._t, ut: r2.ut + h2.ut }), Yn(t[s], jn(Yn(t[e3], t[i]), qn))];
-  }
-  function Xn(t, i) {
-    const s = t.context;
-    s.strokeStyle = i, s.stroke();
-  }
-  var Zn = class extends R {
-    constructor() {
-      super(...arguments), this.rt = null;
-    }
-    ht(t) {
-      this.rt = t;
-    }
-    et(t) {
-      if (null === this.rt) return;
-      const { ot: i, lt: s, Jg: n, Qg: e3, ct: r2, Xt: h2, tM: l2 } = this.rt;
-      if (null === s) return;
-      const o2 = t.context;
-      o2.lineCap = "butt", o2.lineWidth = r2 * t.verticalPixelRatio, a(o2, h2), o2.lineJoin = "round";
-      const _2 = this.iM.bind(this);
-      void 0 !== e3 && $n(t, i, e3, s, n, _2, Xn), l2 && (function(t2, i2, s2, n2, e4) {
-        if (n2.to - n2.from <= 0) return;
-        const { horizontalPixelRatio: r3, verticalPixelRatio: h3, context: a2 } = t2;
-        let l3 = null;
-        const o3 = Math.max(1, Math.floor(r3)) % 2 / 2, _3 = s2 * h3 + o3;
-        for (let s3 = n2.to - 1; s3 >= n2.from; --s3) {
-          const n3 = i2[s3];
-          if (n3) {
-            const i3 = e4(t2, n3);
-            i3 !== l3 && (a2.beginPath(), null !== l3 && a2.fill(), a2.fillStyle = i3, l3 = i3);
-            const s4 = Math.round(n3._t * r3) + o3, u2 = n3.ut * h3;
-            a2.moveTo(s4, u2), a2.arc(s4, u2, _3, 0, 2 * Math.PI);
-          }
-        }
-        a2.fill();
-      })(t, i, l2, s, _2);
-    }
-  };
-  var Gn = class extends Zn {
-    iM(t, i) {
-      return i.vt;
-    }
-  };
-  var Jn = class extends Un {
-    constructor() {
-      super(...arguments), this.og = new Gn();
-    }
-    Gg(t, i, s) {
-      return { ...this.Zg(t, i), ...s.Dr(t) };
-    }
-    pg() {
-      const t = this.Jn.N(), i = { ot: this.rg, Xt: t.lineStyle, Qg: t.lineVisible ? t.lineType : void 0, ct: t.lineWidth, tM: t.pointMarkersVisible ? t.pointMarkersRadius || t.lineWidth / 2 + 2 : void 0, lt: this.hg, Jg: this.Qn.Et().mu() };
-      this.og.ht(i);
-    }
-  };
-  var Qn = { type: "Line", isBuiltIn: true, defaultOptions: { color: "#2196f3", lineStyle: 0, lineWidth: 3, lineType: 0, lineVisible: true, crosshairMarkerVisible: true, crosshairMarkerRadius: 4, crosshairMarkerBorderColor: "", crosshairMarkerBorderWidth: 2, crosshairMarkerBackgroundColor: "", lastPriceAnimation: 0, pointMarkersVisible: false }, $g: (t, i) => new Jn(t, i) };
   var Me = class extends _n {
     constructor(t, i) {
       super(t, i, false);
@@ -9108,48 +8988,6 @@
 
   // src/price-chart.ts
   var palette = () => ({ bg: themeColor("--chart-bg"), text: themeColor("--chart-text"), grid: themeColor("--chart-grid"), up: themeColor("--chart-up"), down: themeColor("--chart-down"), entry: themeColor("--chart-entry"), pending: themeColor("--chart-pending"), level: themeColor("--chart-level") });
-  var OVERLAY_META = [
-    { key: "bb", label: "BB(20,2)", color: "--chart-level", pane: 0 },
-    { key: "ema", label: "EMA(200)", color: "--chart-up", pane: 0 },
-    { key: "rsi", label: "RSI(14)", color: "--chart-pending", pane: 1 }
-  ];
-  var sma = (v2, n) => v2.map((_2, i) => i < n - 1 ? NaN : v2.slice(i - n + 1, i + 1).reduce((s, x3) => s + x3, 0) / n);
-  var ema = (v2, n) => {
-    const k2 = 2 / (n + 1);
-    const out = [];
-    let prev = NaN;
-    for (let i = 0; i < v2.length; i++) {
-      prev = Number.isFinite(prev) ? v2[i] * k2 + prev * (1 - k2) : v2[i];
-      out.push(prev);
-    }
-    return out;
-  };
-  var rsi = (v2, n = 14) => {
-    const out = [];
-    let gain = 0, loss = 0;
-    for (let i = 0; i < v2.length; i++) {
-      if (i === 0) {
-        out.push(NaN);
-        continue;
-      }
-      const d2 = v2[i] - v2[i - 1];
-      const g2 = Math.max(d2, 0), l2 = Math.max(-d2, 0);
-      if (i <= n) {
-        gain += g2;
-        loss += l2;
-        if (i === n) {
-          gain /= n;
-          loss /= n;
-          out.push(loss === 0 ? 100 : 100 - 100 / (1 + gain / loss));
-        } else out.push(NaN);
-        continue;
-      }
-      gain = (gain * (n - 1) + g2) / n;
-      loss = (loss * (n - 1) + l2) / n;
-      out.push(loss === 0 ? 100 : 100 - 100 / (1 + gain / loss));
-    }
-    return out;
-  };
   var PriceChart = class {
     constructor(el) {
       this.el = el;
@@ -9163,7 +9001,6 @@
       __publicField(this, "markers");
       __publicField(this, "entryIndex", -1);
       __publicField(this, "colors");
-      __publicField(this, "overlays", /* @__PURE__ */ new Map());
       __publicField(this, "retheme", () => {
         if (this.dead) return;
         const c2 = this.colors = palette();
@@ -9171,7 +9008,6 @@
         this.series.applyOptions({ upColor: c2.up, downColor: c2.down, wickUpColor: c2.up, wickDownColor: c2.down });
         this.lines.forEach((line, i) => line.applyOptions({ color: this.levelColor(this.exits[i]?.state) }));
         this.markers.setMarkers(this.markers.markers().map((m2) => ({ ...m2, color: c2.entry })));
-        this.overlays.forEach((s) => s.applyOptions({ color: themeColor(OVERLAY_META.find((m2) => s === this.overlays.get(m2.key))?.color || "--chart-level") }));
       });
       const c2 = this.colors = palette();
       this.chart = Wn(el, { autoSize: true, localization: { locale: "en-US" }, layout: { background: { type: Li.Solid, color: c2.bg }, textColor: c2.text, fontSize: 12, attributionLogo: true }, grid: { vertLines: { visible: false }, horzLines: { color: c2.grid } }, rightPriceScale: { borderVisible: false, scaleMargins: { top: 0.12, bottom: 0.12 } }, timeScale: { borderVisible: false, timeVisible: true, secondsVisible: false, rightOffset: 4 }, crosshair: { mode: 0 } });
@@ -9191,19 +9027,7 @@
       const c2 = this.colors;
       return state === "entry" ? c2.entry : state === "stop" ? c2.down : state === "active" ? c2.up : state === "pending" ? c2.pending : c2.level;
     }
-    ensureOverlay(meta) {
-      let s = this.overlays.get(meta.key);
-      if (!s) {
-        try {
-          s = this.chart.addSeries(Qn, { color: themeColor(meta.color), lineWidth: 1, lineStyle: meta.dashed ? h.Dashed : h.Solid, lastValueVisible: false, priceLineVisible: false, crosshairMarkerVisible: false }, meta.pane);
-        } catch {
-          return void 0;
-        }
-        this.overlays.set(meta.key, s);
-      }
-      return s;
-    }
-    render(rows, trade, tf, mode, overlays = []) {
+    render(rows, trade, tf, mode) {
       const data = rows.filter((r2) => r2.length >= 5 && r2.every(Number.isFinite)).map((r2) => ({ time: Math.floor(r2[0] / 1e3), open: r2[1], close: r2[2], low: r2[3], high: r2[4] })).sort((a2, b2) => a2.time - b2.time).filter((r2, i, a2) => !i || r2.time !== a2[i - 1].time);
       if (!data.length) return;
       const previous = this.chart.timeScale().getVisibleLogicalRange();
@@ -9215,41 +9039,6 @@
       this.series.setData(data);
       this.lines.forEach((line) => this.series.removePriceLine(line));
       this.lines = this.exits.map((x3) => this.series.createPriceLine({ price: x3.price, title: x3.label, axisLabelVisible: true, color: this.levelColor(x3.state), lineStyle: x3.state === "entry" || x3.state === "active" ? h.Solid : h.Dotted, lineWidth: x3.state === "entry" ? 2 : 1 }));
-      const closes = data.map((d2) => d2.close);
-      const want = new Set(overlays);
-      const lines = {};
-      if (want.has("bb")) {
-        const mid = sma(closes, 20);
-        const variance = closes.map((_2, i) => i < 19 ? NaN : closes.slice(i - 19, i + 1).reduce((s, x3) => s + x3 * x3, 0) / 20 - Math.pow(mid[i], 2));
-        const sd = variance.map((v2) => Number.isFinite(v2) ? Math.sqrt(v2) : NaN);
-        lines.bb_mid = mid;
-        lines.bb_up = mid.map((m2, i) => Number.isFinite(m2) ? m2 + 2 * sd[i] : NaN);
-        lines.bb_lo = mid.map((m2, i) => Number.isFinite(m2) ? m2 - 2 * sd[i] : NaN);
-      }
-      if (want.has("ema")) lines.ema = ema(closes, 200);
-      if (want.has("rsi")) lines.rsi = rsi(closes, 14);
-      for (const meta of OVERLAY_META) {
-        const series = this.ensureOverlay(meta);
-        if (!series) continue;
-        if (!want.has(meta.key)) {
-          series.setData([]);
-          continue;
-        }
-        const mk = (vals) => data.map((d2, i) => ({ time: d2.time, value: vals[i] })).filter((p2) => p2.value != null && Number.isFinite(p2.value));
-        if (meta.key === "bb") {
-          const sub = [{ suffix: "mid", dashed: false }, { suffix: "up", dashed: true }, { suffix: "lo", dashed: true }];
-          for (const { suffix, dashed } of sub) {
-            const s2 = this.overlays.get("bb_" + suffix) || this.ensureOverlay({ key: "bb_" + suffix, color: meta.color, pane: meta.pane });
-            if (!s2) continue;
-            s2.applyOptions({ lineStyle: dashed ? h.Dashed : h.Solid });
-            s2.setData(mk(lines["bb_" + suffix] || []));
-          }
-          series.setData([]);
-        } else {
-          series.setData(mk(lines[meta.key] || []));
-        }
-      }
-      for (const key of ["bb_mid", "bb_up", "bb_lo"]) if (!want.has("bb")) this.overlays.get(key)?.setData([]);
       const raw = trade.open_ts;
       const numeric = Number(raw);
       const opened = raw == null ? NaN : Number.isFinite(numeric) ? numeric < 1e12 ? numeric * 1e3 : numeric : Date.parse(String(raw));

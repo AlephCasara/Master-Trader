@@ -9,7 +9,6 @@ WORKDIR /app
 COPY ft_dashboard/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY ft_dashboard/app.py ft_dashboard/trade_controls.py /app/
-COPY ft_dashboard/strategy_notes.json /app/strategy_notes.json
 COPY ft_dashboard/events.yml /app/events.yml
 COPY ft_dashboard/static /app/static
 COPY ft_dashboard/templates /app/templates
