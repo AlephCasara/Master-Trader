@@ -16,7 +16,7 @@ from pathlib import Path
 from . import config_builder, registry
 from .calibration import _load_backtest_trades
 from .candidate_runner import run_family
-from .data_snapshot_validation import require_snapshot_coverage
+from .data_snapshot_validation import validate_snapshot_coverage
 from .trade_diagnostics import summarize_trades
 
 
@@ -104,6 +104,25 @@ def _candidate_summary(name: str, candidate: dict) -> dict:
     }
 
 
+def _persist(result: dict) -> None:
+    output = Path(result["result_file"])
+    output.write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
+
+
+def _invalidate_for_data_coverage(result: dict, coverage: dict) -> None:
+    """Make a preliminary artifact unambiguously unusable for research passage."""
+    result["data_coverage"] = coverage
+    result["promotion_authority"] = False
+    for candidate in result.get("candidates", {}).values():
+        screen = candidate.setdefault("quant_screen", {})
+        screen["passed"] = False
+        screen["data_coverage_gate"] = {
+            "passed": False,
+            "reason": "frozen snapshot does not cover the complete decision timerange",
+        }
+        screen["promotion_authority"] = False
+
+
 def run_quant_finance(
     family: str,
     timerange: str,
@@ -121,12 +140,21 @@ def run_quant_finance(
     result = run_family(family, timerange, mode, strategy, download)
 
     market = manifest["market"]
-    data_coverage = require_snapshot_coverage(
+    data_coverage = validate_snapshot_coverage(
         result["data_contract"],
         timerange,
         [market["timeframe"], market["detail_timeframe"]],
     )
     result["data_coverage"] = data_coverage
+    if not data_coverage["passed"]:
+        _invalidate_for_data_coverage(result, data_coverage)
+        _persist(result)
+        failed = [
+            f"{row['kind']}:{row['pair']}:{row.get('timeframe') or ''}"
+            for row in data_coverage["checks"]
+            if not row["passed"]
+        ]
+        raise RuntimeError(f"candidate snapshot does not cover frozen timerange: {failed}")
 
     for name, candidate in result["candidates"].items():
         trades = _exported_trades(candidate)
@@ -137,7 +165,7 @@ def run_quant_finance(
         "timerange": timerange,
         "family": family,
         "cost_contract": cost_contract,
-        "data_coverage_passed": data_coverage["passed"],
+        "data_coverage_passed": True,
         "strategies": [
             _candidate_summary(name, candidate)
             for name, candidate in result["candidates"].items()
@@ -149,9 +177,7 @@ def run_quant_finance(
         "promotion_authority": False,
     }
     result["promotion_authority"] = False
-
-    output = Path(result["result_file"])
-    output.write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
+    _persist(result)
     return result
 
 
