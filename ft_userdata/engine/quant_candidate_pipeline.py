@@ -3,8 +3,8 @@
 
 `candidate_runner` performs the expensive validation stages. This module adds
 the decision-report layer promised by the candidate manifest: an explicit cost
-contract plus per-asset/side, turnover and time-in-market diagnostics derived
-from the exact exported trades. It never changes a strategy or authorizes capital.
+contract, frozen-snapshot coverage checks, and per-asset/side diagnostics from
+the exact exported trades. It never changes a strategy or authorizes capital.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ from pathlib import Path
 from . import config_builder, registry
 from .calibration import _load_backtest_trades
 from .candidate_runner import run_family
+from .data_snapshot_validation import require_snapshot_coverage
 from .trade_diagnostics import summarize_trades
 
 
@@ -23,14 +24,20 @@ def _manifest_path(family: str) -> Path:
     return registry.FT_DIR / "research_candidates" / f"{family}.json"
 
 
-def _apply_explicit_cost_contract(family: str) -> dict:
+def _load_manifest(family: str) -> dict:
+    path = _manifest_path(family)
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _apply_explicit_cost_contract(manifest: dict) -> dict:
     """Pin the per-side fee in generated Freqtrade research configs.
 
     Relying on whatever fee metadata CCXT returns in a future run would make a
     historical decision artifact non-reproducible. V0 therefore declares a
     conservative market/taker fee explicitly in its immutable manifest.
     """
-    manifest = json.loads(_manifest_path(family).read_text(encoding="utf-8"))
     contract = manifest.get("cost_contract") or {}
     fee = contract.get("fee_ratio_per_side")
     if fee is None:
@@ -109,8 +116,17 @@ def run_quant_finance(
     The returned report is evidence for research triage only. Even a fully
     passing report has `promotion_authority=false` and cannot alter runtime.
     """
-    cost_contract = _apply_explicit_cost_contract(family)
+    manifest = _load_manifest(family)
+    cost_contract = _apply_explicit_cost_contract(manifest)
     result = run_family(family, timerange, mode, strategy, download)
+
+    market = manifest["market"]
+    data_coverage = require_snapshot_coverage(
+        result["data_contract"],
+        timerange,
+        [market["timeframe"], market["detail_timeframe"]],
+    )
+    result["data_coverage"] = data_coverage
 
     for name, candidate in result["candidates"].items():
         trades = _exported_trades(candidate)
@@ -121,6 +137,7 @@ def run_quant_finance(
         "timerange": timerange,
         "family": family,
         "cost_contract": cost_contract,
+        "data_coverage_passed": data_coverage["passed"],
         "strategies": [
             _candidate_summary(name, candidate)
             for name, candidate in result["candidates"].items()
