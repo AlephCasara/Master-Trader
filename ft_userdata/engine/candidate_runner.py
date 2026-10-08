@@ -2,8 +2,8 @@
 """Automated Quant Finance runner for explicit research candidates.
 
 Candidates are registered only in this Python process, never as active bots.
-The runner freezes assets/data/code, enables the candidate data contract, and
-runs the existing deterministic Engine-v2 validation components.
+The runner freezes assets/data/code, enables the candidate data contract, runs
+existing Engine-v2 validation, and applies preregistered Phase-A diagnostics.
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ from .calibration import _load_backtest_trades
 from .data import validate_data
 from .fixed_validation import _parse_closed_timerange, run_fixed_parameter_validation
 from .monte_carlo import run_robustness_stage
+from .phase_a_diagnostics import additional_friction_stress, matched_random_null
 from .viability import run_viability_stage
 
 FT_DIR = registry.FT_DIR
@@ -40,14 +41,24 @@ ORDERFLOW_CONFIG = {
 }
 
 
-def _load_family(name: str) -> dict:
-    path = CANDIDATE_DIR / f"{name}.json"
+def _load_json(path: Path) -> dict:
     if not path.is_file():
-        raise FileNotFoundError(f"candidate family manifest not found: {path}")
-    data = json.loads(path.read_text(encoding="utf-8"))
+        raise FileNotFoundError(path)
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _load_family(name: str) -> dict:
+    data = _load_json(CANDIDATE_DIR / f"{name}.json")
     if data.get("status") != "research_only" or data.get("runtime_authority") is not False:
         raise ValueError("candidate manifest must be research_only with runtime_authority=false")
     return data
+
+
+def _load_policy(family: str) -> dict:
+    policy = _load_json(CANDIDATE_DIR / f"{family}_policy.json")
+    if policy.get("family") != family or policy.get("kind") != "research_screen_not_promotion":
+        raise ValueError("candidate quant policy does not match family or authority boundary")
+    return policy
 
 
 def _sha256_bytes(payload: bytes) -> str:
@@ -115,13 +126,7 @@ def register_candidate_in_memory(name: str, manifest: dict) -> None:
 
 
 def enable_orderflow_config_in_memory(timerange: str, timeframe: str) -> int:
-    """Cover the *entire* research range with orderflow or refuse to run.
-
-    Freqtrade only populates raw-trade/orderflow data for `max_candles` candles.
-    Using the example/default 1500 on a long historical test would silently
-    leave older rows without orderflow. We therefore size the cache to the
-    complete requested range and enforce an explicit memory budget.
-    """
+    """Cover the entire research range with orderflow or refuse to run."""
     candles = required_orderflow_candles(timerange, timeframe)
     if candles > MAX_ORDERFLOW_CANDLES_PER_PAIR:
         raise ValueError(
@@ -246,20 +251,123 @@ def _extract_viability_trades(via: dict) -> list[dict]:
     return _load_backtest_trades(result_file, strategy_key)
 
 
-def run_candidate(strategy_name: str, manifest: dict, pairs: list[str], timerange: str, mode: str) -> dict:
+def _quant_screen(
+    policy: dict,
+    viability: dict,
+    temporal: dict,
+    robustness: dict,
+    phase_a: dict,
+) -> dict:
+    """Apply the preregistered research screen. Passing never authorizes live."""
+    metrics = viability.get("metrics") or {}
+    lookahead = viability.get("lookahead") or {}
+    null = phase_a.get("matched_random_null") or {}
+    friction = phase_a.get("additional_friction") or {}
+
+    measured = int(temporal.get("windows_measured") or 0)
+    requested = int(temporal.get("windows_requested") or 0)
+    profitable = int(temporal.get("profitable_windows") or 0)
+    profitable_fraction = profitable / measured if measured else 0.0
+    worst_dd = temporal.get("worst_drawdown_pct")
+
+    checks = {
+        "viability": {
+            "observed": viability.get("classification"),
+            "required": "VIABLE",
+            "passed": viability.get("classification") == "VIABLE",
+        },
+        "lookahead": {
+            "observed": lookahead.get("passed"),
+            "required": True,
+            "passed": lookahead.get("passed") is True,
+        },
+        "sample_floor": {
+            "observed": int(metrics.get("total_trades") or 0),
+            "required_min": int(policy["sample_floor"]["min_total_trades"]),
+            "passed": int(metrics.get("total_trades") or 0) >= int(policy["sample_floor"]["min_total_trades"]),
+        },
+        "chronological_coverage": {
+            "observed": f"{measured}/{requested}",
+            "required": "all windows measured",
+            "passed": requested > 0 and measured == requested,
+        },
+        "chronological_profitability": {
+            "observed": profitable_fraction,
+            "required_min": float(policy["temporal_stability"]["min_profitable_window_fraction"]),
+            "passed": profitable_fraction >= float(policy["temporal_stability"]["min_profitable_window_fraction"]),
+        },
+        "chronological_drawdown": {
+            "observed": worst_dd,
+            "required_max": float(policy["temporal_stability"]["max_worst_window_drawdown_pct"]),
+            "passed": worst_dd is not None and float(worst_dd) <= float(policy["temporal_stability"]["max_worst_window_drawdown_pct"]),
+        },
+        "monte_carlo": {
+            "observed": robustness.get("combined_verdict"),
+            "allowed": list(policy["robustness"]["allowed_engine_verdicts"]),
+            "passed": robustness.get("combined_verdict") in policy["robustness"]["allowed_engine_verdicts"],
+        },
+        "matched_random_null": {
+            "observed_p": null.get("upper_tail_p_value"),
+            "required_max_p": float(policy["multiple_testing"]["max_candidate_random_null_p_value"]),
+            "passed": null.get("measured") is True
+            and float(null.get("upper_tail_p_value", 1.0)) <= float(policy["multiple_testing"]["max_candidate_random_null_p_value"]),
+        },
+        "additional_friction": {
+            "observed_break_even_bps": friction.get("additional_round_trip_break_even_bps"),
+            "required_min_bps": float(policy["execution_friction"]["min_additional_round_trip_break_even_bps"]),
+            "passed": friction.get("measured") is True
+            and float(friction.get("additional_round_trip_break_even_bps", 0.0)) >= float(policy["execution_friction"]["min_additional_round_trip_break_even_bps"]),
+        },
+    }
+    passed = all(item["passed"] for item in checks.values())
+    return {
+        "kind": "research_screen_not_promotion",
+        "passed": passed,
+        "checks": checks,
+        "next_gate": "freeze candidate -> untouched holdout / portfolio admission / forward epoch" if passed else "falsify or register a new experiment",
+        "promotion_authority": False,
+    }
+
+
+def run_candidate(
+    strategy_name: str,
+    manifest: dict,
+    policy: dict,
+    pairs: list[str],
+    pair_ohlcv_files: dict[str, str],
+    timerange: str,
+    mode: str,
+) -> dict:
     register_candidate_in_memory(strategy_name, manifest)
     viability = run_viability_stage(strategy_name, pairs, timerange)
+    trades = _extract_viability_trades(viability)
+    phase_a = {
+        "additional_friction": additional_friction_stress(trades),
+        "matched_random_null": matched_random_null(
+            trades=trades,
+            pair_ohlcv_files=pair_ohlcv_files,
+            timerange=timerange,
+            iterations=1000,
+        ),
+    }
+
     if viability.get("classification") == "DEAD":
         return {
             "strategy": strategy_name,
             "viability": viability,
+            "phase_a_diagnostics": phase_a,
             "temporal_validation": {"skipped": True, "reason": "DEAD in viability"},
             "robustness": {"skipped": True, "reason": "DEAD in viability"},
+            "quant_screen": {
+                "kind": "research_screen_not_promotion",
+                "passed": False,
+                "reason": "DEAD in viability",
+                "promotion_authority": False,
+            },
         }
 
     windows = int(registry.get_mode(mode).get("wf_windows", 6))
     temporal = run_fixed_parameter_validation(strategy_name, pairs, timerange, windows=max(3, windows))
-    trades = _extract_viability_trades(viability)
 
     robust_mode = dict(registry.get_mode(mode))
     robust_mode["perturb_pcts"] = []  # signal + Phase-A exits are frozen in V0
@@ -273,17 +381,21 @@ def run_candidate(strategy_name: str, manifest: dict, pairs: list[str], timerang
         timerange=timerange,
         mode_config=robust_mode,
     )
+    screen = _quant_screen(policy, viability, temporal, robustness, phase_a)
     return {
         "strategy": strategy_name,
         "viability": viability,
+        "phase_a_diagnostics": phase_a,
         "temporal_validation": temporal,
         "robustness": robustness,
+        "quant_screen": screen,
     }
 
 
 def run_family(family: str, timerange: str, mode: str, strategy: str | None, download: bool) -> dict:
     _parse_closed_timerange(timerange)
     manifest = _load_family(family)
+    policy = _load_policy(family)
     pairs = list(manifest["development_universe"]["pairs"])
     selected = [strategy] if strategy else list(manifest["candidates"])
     unknown = sorted(set(selected) - set(manifest["candidates"]))
@@ -295,6 +407,7 @@ def run_family(family: str, timerange: str, mode: str, strategy: str | None, dow
     data_contract = _validate_data_contract(manifest, pairs, timerange)
 
     manifest_path = CANDIDATE_DIR / f"{family}.json"
+    policy_path = CANDIDATE_DIR / f"{family}_policy.json"
     strategy_files = [USER_DATA / "strategies" / f"{name}.py" for name in selected]
     shared_files = [
         USER_DATA / "strategies" / "orderflow_auction_common.py",
@@ -303,12 +416,19 @@ def run_family(family: str, timerange: str, mode: str, strategy: str | None, dow
     raw_trade_files = [Path(p) for p in data_contract["raw_trade_files"].values()]
     ohlcv_files = [Path(p) for paths in data_contract["ohlcv_files"].values() for p in paths]
 
+    primary_tf = manifest["market"]["timeframe"]
+    pair_ohlcv_files = {
+        pair: next(path for path in paths if f"-{primary_tf}-" in path)
+        for pair, paths in data_contract["ohlcv_files"].items()
+    }
+
     provenance = {
         "family": family,
         "timerange": timerange,
         "pairlist": pairs,
         "pairlist_sha256": _pairlist_hash(pairs),
         "manifest_sha256": _sha256_file(manifest_path),
+        "quant_policy_sha256": _sha256_file(policy_path),
         "strategy_sha256": {path.stem: _sha256_file(path) for path in strategy_files + shared_files},
         "data_snapshot_sha256": _snapshot_hash(raw_trade_files + ohlcv_files),
         "freqtrade_image": manifest["market"]["image"],
@@ -317,13 +437,17 @@ def run_family(family: str, timerange: str, mode: str, strategy: str | None, dow
         "runtime_authority": False,
     }
 
-    candidate_results = {name: run_candidate(name, manifest, pairs, timerange, mode) for name in selected}
+    candidate_results = {
+        name: run_candidate(name, manifest, policy, pairs, pair_ohlcv_files, timerange, mode)
+        for name in selected
+    }
     result = {
         "schema_version": 1,
         "kind": "candidate_quant_finance_run",
         "provenance": provenance,
         "data_download": download_result,
         "data_contract": data_contract,
+        "quant_policy": policy,
         "candidates": candidate_results,
         "promotion_authority": False,
     }
