@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Automated Quant Finance runner for explicit research candidates.
 
-This runner is intentionally separate from live lifecycle. It registers a
-candidate only in the current Python process, enables the data contract needed
-by that candidate, runs deterministic validation/backtests, and writes an
-immutable-style research artifact. It never changes bots_config or starts a bot.
+Candidates are registered only in this Python process, never as active bots.
+The runner freezes assets/data/code, enables the candidate data contract, and
+runs the existing deterministic Engine-v2 validation components.
 """
 
 from __future__ import annotations
@@ -13,10 +12,10 @@ import argparse
 import copy
 import hashlib
 import json
+import math
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 from . import config_builder, registry
 from .calibration import _load_backtest_trades
@@ -29,6 +28,7 @@ FT_DIR = registry.FT_DIR
 USER_DATA = FT_DIR / "user_data"
 CANDIDATE_DIR = FT_DIR / "research_candidates"
 RESULTS_DIR = FT_DIR / "engine_results"
+MAX_ORDERFLOW_CANDLES_PER_PAIR = 120_000
 
 ORDERFLOW_CONFIG = {
     "cache_size": 1000,
@@ -69,6 +69,20 @@ def _pairlist_hash(pairs: list[str]) -> str:
     return _sha256_bytes(json.dumps(sorted(pairs), separators=(",", ":")).encode())
 
 
+def _timeframe_minutes(timeframe: str) -> int:
+    if timeframe.endswith("m"):
+        return int(timeframe[:-1])
+    if timeframe.endswith("h"):
+        return int(timeframe[:-1]) * 60
+    raise ValueError(f"candidate runner supports minute/hour timeframes, got {timeframe}")
+
+
+def required_orderflow_candles(timerange: str, timeframe: str, startup: int = 128) -> int:
+    start, end = _parse_closed_timerange(timerange)
+    minutes = (end - start).total_seconds() / 60.0
+    return int(math.ceil(minutes / _timeframe_minutes(timeframe))) + startup
+
+
 def _candidate_metadata(manifest: dict) -> dict:
     market = manifest["market"]
     execution = manifest["execution_contract"]
@@ -100,14 +114,31 @@ def register_candidate_in_memory(name: str, manifest: dict) -> None:
     assert name not in registry.get_active_strategies()
 
 
-def enable_orderflow_config_in_memory() -> None:
-    """Patch generated research configs only for this process."""
+def enable_orderflow_config_in_memory(timerange: str, timeframe: str) -> int:
+    """Cover the *entire* research range with orderflow or refuse to run.
+
+    Freqtrade only populates raw-trade/orderflow data for `max_candles` candles.
+    Using the example/default 1500 on a long historical test would silently
+    leave older rows without orderflow. We therefore size the cache to the
+    complete requested range and enforce an explicit memory budget.
+    """
+    candles = required_orderflow_candles(timerange, timeframe)
+    if candles > MAX_ORDERFLOW_CANDLES_PER_PAIR:
+        raise ValueError(
+            f"orderflow range requires {candles:,} candles/pair, above the "
+            f"research memory budget {MAX_ORDERFLOW_CANDLES_PER_PAIR:,}; "
+            "use a shorter closed development range or implement chunked orderflow evaluation"
+        )
     config_builder.BASE_CONFIG["exchange"]["use_public_trades"] = True
-    config_builder.BASE_CONFIG["orderflow"] = copy.deepcopy(ORDERFLOW_CONFIG)
+    orderflow = copy.deepcopy(ORDERFLOW_CONFIG)
+    orderflow["cache_size"] = candles
+    orderflow["max_candles"] = candles
+    config_builder.BASE_CONFIG["orderflow"] = orderflow
+    return candles
 
 
 def _docker_download(manifest: dict, pairs: list[str], timerange: str) -> dict:
-    """Download 1m/5m candles and the raw public trades required by orderflow."""
+    """Download normal 1m/5m candles plus the raw public-trade archive."""
     image = manifest["market"]["image"]
     timeframes = sorted({manifest["market"]["timeframe"], manifest["market"]["detail_timeframe"]})
     mount = f"{USER_DATA}:/freqtrade/user_data"
@@ -139,8 +170,17 @@ def _docker_download(manifest: dict, pairs: list[str], timerange: str) -> dict:
     return result
 
 
+def _data_dir() -> Path:
+    return USER_DATA / "data" / "binance" / "futures"
+
+
+def _ohlcv_file(pair: str, timeframe: str) -> Path:
+    safe = pair.replace("/", "_").replace(":", "_")
+    return _data_dir() / f"{safe}-{timeframe}-futures.feather"
+
+
 def _trade_file_for_pair(pair: str) -> Path | None:
-    data_dir = USER_DATA / "data" / "binance" / "futures"
+    data_dir = _data_dir()
     safe = pair.replace("/", "_").replace(":", "_")
     candidates = [
         data_dir / f"{safe}-trades.feather",
@@ -149,7 +189,6 @@ def _trade_file_for_pair(pair: str) -> Path | None:
     for path in candidates:
         if path.is_file() and path.stat().st_size > 0:
             return path
-    # Keep this fail-closed while tolerating a future naming tweak.
     token = safe.split("_")[0]
     matches = sorted(data_dir.glob(f"{token}*trades.feather")) if data_dir.is_dir() else []
     return matches[0] if len(matches) == 1 and matches[0].stat().st_size > 0 else None
@@ -158,25 +197,42 @@ def _trade_file_for_pair(pair: str) -> Path | None:
 def _validate_data_contract(manifest: dict, pairs: list[str], timerange: str) -> dict:
     tfs = [manifest["market"]["timeframe"], manifest["market"]["detail_timeframe"]]
     candle_report = validate_data(pairs, tfs, timerange, trading_mode="futures")
-    trade_files = {}
-    missing = []
+    trade_files: dict[str, str] = {}
+    ohlcv_files: dict[str, list[str]] = {}
+    missing_trades = []
+    missing_ohlcv = []
+
     for pair in pairs:
-        path = _trade_file_for_pair(pair)
-        if path is None:
-            missing.append(pair)
+        trade_path = _trade_file_for_pair(pair)
+        if trade_path is None:
+            missing_trades.append(pair)
         else:
-            trade_files[pair] = str(path)
-    if not candle_report.get("valid") or missing:
+            trade_files[pair] = str(trade_path)
+
+        pair_candles = []
+        for tf in tfs:
+            path = _ohlcv_file(pair, tf)
+            if not path.is_file() or path.stat().st_size == 0:
+                missing_ohlcv.append(f"{pair}@{tf}")
+            else:
+                pair_candles.append(str(path))
+        ohlcv_files[pair] = pair_candles
+
+    if not candle_report.get("valid") or missing_trades or missing_ohlcv:
         raise RuntimeError(
             f"candidate data contract failed: candles_valid={candle_report.get('valid')} "
-            f"missing_raw_trades={missing}"
+            f"missing_raw_trades={missing_trades} missing_ohlcv={missing_ohlcv}"
         )
-    return {"candles": candle_report, "raw_trade_files": trade_files}
+    return {
+        "candles": candle_report,
+        "raw_trade_files": trade_files,
+        "ohlcv_files": ohlcv_files,
+    }
 
 
 def _snapshot_hash(paths: list[Path]) -> str:
     records = []
-    for path in sorted(paths, key=lambda p: str(p)):
+    for path in sorted(set(paths), key=lambda p: str(p)):
         records.append({"path": str(path), "sha256": _sha256_file(path), "bytes": path.stat().st_size})
     return _sha256_bytes(json.dumps(records, sort_keys=True, separators=(",", ":")).encode())
 
@@ -190,16 +246,8 @@ def _extract_viability_trades(via: dict) -> list[dict]:
     return _load_backtest_trades(result_file, strategy_key)
 
 
-def run_candidate(
-    strategy_name: str,
-    manifest: dict,
-    pairs: list[str],
-    timerange: str,
-    mode: str,
-) -> dict:
+def run_candidate(strategy_name: str, manifest: dict, pairs: list[str], timerange: str, mode: str) -> dict:
     register_candidate_in_memory(strategy_name, manifest)
-    enable_orderflow_config_in_memory()
-
     viability = run_viability_stage(strategy_name, pairs, timerange)
     if viability.get("classification") == "DEAD":
         return {
@@ -213,10 +261,8 @@ def run_candidate(
     temporal = run_fixed_parameter_validation(strategy_name, pairs, timerange, windows=max(3, windows))
     trades = _extract_viability_trades(viability)
 
-    # V0 has frozen signal/exit parameters. Parameter perturbation would answer
-    # a different experiment, so robustness here is trade-path MC only.
     robust_mode = dict(registry.get_mode(mode))
-    robust_mode["perturb_pcts"] = []
+    robust_mode["perturb_pcts"] = []  # signal + Phase-A exits are frozen in V0
     if robust_mode.get("mc_iterations", 0) == 0:
         robust_mode["mc_iterations"] = 500
     robustness = run_robustness_stage(
@@ -244,13 +290,18 @@ def run_family(family: str, timerange: str, mode: str, strategy: str | None, dow
     if unknown:
         raise ValueError(f"strategies not in family: {unknown}")
 
-    enable_orderflow_config_in_memory()
+    orderflow_candles = enable_orderflow_config_in_memory(timerange, manifest["market"]["timeframe"])
     download_result = _docker_download(manifest, pairs, timerange) if download else {"skipped": True}
     data_contract = _validate_data_contract(manifest, pairs, timerange)
 
     manifest_path = CANDIDATE_DIR / f"{family}.json"
     strategy_files = [USER_DATA / "strategies" / f"{name}.py" for name in selected]
+    shared_files = [
+        USER_DATA / "strategies" / "orderflow_auction_common.py",
+        USER_DATA / "strategies" / "orderflow_auction_base.py",
+    ]
     raw_trade_files = [Path(p) for p in data_contract["raw_trade_files"].values()]
+    ohlcv_files = [Path(p) for paths in data_contract["ohlcv_files"].values() for p in paths]
 
     provenance = {
         "family": family,
@@ -258,17 +309,15 @@ def run_family(family: str, timerange: str, mode: str, strategy: str | None, dow
         "pairlist": pairs,
         "pairlist_sha256": _pairlist_hash(pairs),
         "manifest_sha256": _sha256_file(manifest_path),
-        "strategy_sha256": {path.stem: _sha256_file(path) for path in strategy_files},
-        "raw_trade_snapshot_sha256": _snapshot_hash(raw_trade_files),
+        "strategy_sha256": {path.stem: _sha256_file(path) for path in strategy_files + shared_files},
+        "data_snapshot_sha256": _snapshot_hash(raw_trade_files + ohlcv_files),
         "freqtrade_image": manifest["market"]["image"],
+        "orderflow_candles_per_pair": orderflow_candles,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "runtime_authority": False,
     }
 
-    candidate_results = {}
-    for name in selected:
-        candidate_results[name] = run_candidate(name, manifest, pairs, timerange, mode)
-
+    candidate_results = {name: run_candidate(name, manifest, pairs, timerange, mode) for name in selected}
     result = {
         "schema_version": 1,
         "kind": "candidate_quant_finance_run",
@@ -291,7 +340,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run research-only candidates through Quant Finance")
     parser.add_argument("--family", default="orderflow_auction_v0")
     parser.add_argument("--strategy", default=None, help="Optional one candidate from the family")
-    parser.add_argument("--timerange", required=True, help="Closed YYYYMMDD-YYYYMMDD decision/development range")
+    parser.add_argument("--timerange", required=True, help="Closed YYYYMMDD-YYYYMMDD development range")
     parser.add_argument("--mode", choices=list(registry.MODES.keys()), default="rigorous")
     parser.add_argument("--skip-download", action="store_true")
     return parser
@@ -300,13 +349,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = build_parser().parse_args()
     try:
-        result = run_family(
-            family=args.family,
-            timerange=args.timerange,
-            mode=args.mode,
-            strategy=args.strategy,
-            download=not args.skip_download,
-        )
+        result = run_family(args.family, args.timerange, args.mode, args.strategy, not args.skip_download)
     except Exception as exc:
         print(f"candidate runner failed: {exc}")
         return 2
