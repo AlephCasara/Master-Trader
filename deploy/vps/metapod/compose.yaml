@@ -1,0 +1,450 @@
+# Master-Trader fleet on metapod-vps (plain docker compose, bd k1u.2).
+#
+# Port of the 16-service Zeabur fleet (12 fleet + 4 test-lane bots) to plain
+# compose. Service-to-service URLs use bare compose names: FLEET_DNS_SUFFIX is
+# forced empty on the dashboard and Zeabur-internal DNS appears nowhere.
+#
+# Secrets live in per-service env files next to this file (./env/<name>.env,
+# never committed). Compose `environment:` below overrides `env_file:`, so
+# everything non-secret is pinned here and survives a stale env file.
+#
+# Host addresses (the VPS, the home-LLM hostname/IP) are deployment values
+# supplied via `.env` variable substitution; the repo carries no IP literals
+# and no tailnet names. tests/test_metapod_compose.py enforces this.
+#
+# Image tags default to the 20261007-1 migration-day builds; override per
+# image with MT_HL_GATEWAY_TAG / MT_FREQTRADE_TAG / MT_KILLERS_RECEIVER_TAG /
+# MT_DASHBOARD_TAG / MT_OBSERVER_TAG. Tag parity with the live Zeabur fleet is
+# verified at cutover (bd k1u.8).
+#
+# The mt-freqtrade image inherits ENTRYPOINT ["freqtrade"] from its base
+# image, so the per-bot run scripts override `entrypoint:`, never `command:`.
+#
+# Published ports are reachable from the tailnet only (DOCKER-USER chain on
+# the host); publish plainly, never bind 127.0.0.1, or tailnet DNAT breaks.
+
+x-bot-healthcheck: &bot-healthcheck
+  test: ["CMD", "curl", "-sf", "http://localhost:8080/api/v1/ping"]
+  interval: 30s
+  timeout: 10s
+  retries: 5
+  start_period: 120s
+
+services:
+  hl-gateway:
+    image: ghcr.io/alephcasara/mt-hl-gateway:${MT_HL_GATEWAY_TAG:-20261007-1}
+    restart: unless-stopped
+    container_name: hl-gateway
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  ft-short-keltner-hl-live:
+    image: ghcr.io/alephcasara/mt-freqtrade:${MT_FREQTRADE_TAG:-20261007-1}
+    restart: unless-stopped
+    container_name: ft-short-keltner-hl-live
+    entrypoint: ["/usr/local/bin/mt-run-short-keltner.sh"]
+    env_file: ./env/ft-short-keltner-hl-live.env
+    environment:
+      FREQTRADE__EXCHANGE__ENABLE_WS: "false"
+      FREQTRADE__EXCHANGE__CCXT_CONFIG__urls__api__public: http://hl-gateway:8080/short
+      FREQTRADE__EXCHANGE__CCXT_CONFIG__urls__api__private: http://hl-gateway:8080/short
+      FREQTRADE__EXCHANGE__CCXT_CONFIG__timeout: "90000"
+      FREQTRADE__INTERNALS__PROCESS_THROTTLE_SECS: "30"
+      FREQTRADE__CANCEL_OPEN_ORDERS_ON_EXIT: "false"
+      FREQTRADE__EXCHANGE__WALLET_ADDRESS: ""
+      FREQTRADE__EXCHANGE__PRIVATE_KEY: ""
+      FREQTRADE__DRY_RUN: "true"
+      FREQTRADE__WEBHOOK__ENABLED: "false"
+      FREQTRADE__FORCE_ENTRY_ENABLE: "true"
+    volumes:
+      - ft_short_keltner_hl_live_user_data:/freqtrade/user_data
+    ports:
+      - "8103:8080"
+    depends_on:
+      hl-gateway:
+        condition: service_healthy
+    healthcheck: *bot-healthcheck
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  ft-keltner-bounce:
+    image: ghcr.io/alephcasara/mt-freqtrade:${MT_FREQTRADE_TAG:-20261007-1}
+    restart: unless-stopped
+    container_name: ft-keltner-bounce
+    entrypoint: ["/usr/local/bin/mt-run-keltner-bounce.sh"]
+    env_file: ./env/ft-keltner-bounce.env
+    environment:
+      FREQTRADE__DRY_RUN: "true"
+      FREQTRADE__ORDER_TYPES__STOPLOSS_ON_EXCHANGE: "false"
+      FREQTRADE__FORCE_ENTRY_ENABLE: "true"
+      FREQTRADE__WEBHOOK__ENABLED: "false"
+    volumes:
+      - ft_keltner_bounce_user_data:/freqtrade/user_data
+    ports:
+      - "8095:8080"
+    healthcheck: *bot-healthcheck
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  ft-funding-fade:
+    image: ghcr.io/alephcasara/mt-freqtrade:${MT_FREQTRADE_TAG:-20261007-1}
+    restart: unless-stopped
+    container_name: ft-funding-fade
+    entrypoint: ["/usr/local/bin/mt-run-funding-fade.sh"]
+    env_file: ./env/ft-funding-fade.env
+    environment:
+      FREQTRADE__DRY_RUN: "true"
+      FREQTRADE__ORDER_TYPES__STOPLOSS_ON_EXCHANGE: "false"
+      FREQTRADE__FORCE_ENTRY_ENABLE: "true"
+      FREQTRADE__WEBHOOK__ENABLED: "false"
+    volumes:
+      - ft_funding_fade_user_data:/freqtrade/user_data
+    ports:
+      - "8096:8080"
+    healthcheck: *bot-healthcheck
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  ft-oi-trend-pullback:
+    image: ghcr.io/alephcasara/mt-freqtrade:${MT_FREQTRADE_TAG:-20261007-1}
+    restart: unless-stopped
+    container_name: ft-oi-trend-pullback
+    entrypoint: ["/usr/local/bin/mt-run-oi-trend.sh"]
+    env_file: ./env/ft-oi-trend-pullback.env
+    environment:
+      FREQTRADE__DRY_RUN: "true"
+      FREQTRADE__ORDER_TYPES__STOPLOSS_ON_EXCHANGE: "false"
+      FREQTRADE__FORCE_ENTRY_ENABLE: "true"
+      FREQTRADE__WEBHOOK__ENABLED: "false"
+    volumes:
+      - ft_oi_trend_pullback_user_data:/freqtrade/user_data
+    ports:
+      - "8102:8080"
+    healthcheck: *bot-healthcheck
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  ft-killers-scalp:
+    image: ghcr.io/alephcasara/mt-freqtrade:${MT_FREQTRADE_TAG:-20261007-1}
+    restart: unless-stopped
+    container_name: ft-killers-scalp
+    entrypoint: ["/usr/local/bin/mt-run-killers-scalp.sh"]
+    env_file: ./env/ft-killers-scalp.env
+    environment:
+      FREQTRADE__EXCHANGE__ENABLE_WS: "false"
+      FREQTRADE__EXCHANGE__PAIR_WHITELIST: '["BTC/USDC:USDC"]'
+      FREQTRADE__EXCHANGE___FT_HAS_PARAMS__ohlcv_candle_limit_per_timeframe__5m: "100"
+      FREQTRADE__EXCHANGE__CCXT_CONFIG__urls__api__public: http://hl-gateway:8080/killers
+      FREQTRADE__EXCHANGE__CCXT_CONFIG__urls__api__private: http://hl-gateway:8080/killers
+      FREQTRADE__EXCHANGE__CCXT_CONFIG__timeout: "90000"
+      FREQTRADE__INTERNALS__PROCESS_THROTTLE_SECS: "30"
+      FREQTRADE__CANCEL_OPEN_ORDERS_ON_EXIT: "false"
+      FREQTRADE__EXCHANGE__WALLET_ADDRESS: ""
+      FREQTRADE__EXCHANGE__PRIVATE_KEY: ""
+      FREQTRADE__DRY_RUN: "true"
+      SIGNAL_RECEIVER_URL: http://killers-receiver:8089
+    volumes:
+      - ft_killers_scalp_user_data:/freqtrade/user_data
+    ports:
+      - "8099:8080"
+    depends_on:
+      hl-gateway:
+        condition: service_healthy
+    healthcheck: *bot-healthcheck
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  ft-insiders-scalp:
+    image: ghcr.io/alephcasara/mt-freqtrade:${MT_FREQTRADE_TAG:-20261007-1}
+    restart: unless-stopped
+    container_name: ft-insiders-scalp
+    entrypoint: ["/usr/local/bin/mt-run-insiders-scalp.sh"]
+    env_file: ./env/ft-insiders-scalp.env
+    environment:
+      FREQTRADE__EXCHANGE__ENABLE_WS: "false"
+      FREQTRADE__EXCHANGE__PAIR_WHITELIST: '["BTC/USDC:USDC"]'
+      FREQTRADE__EXCHANGE___FT_HAS_PARAMS__ohlcv_candle_limit_per_timeframe__5m: "100"
+      FREQTRADE__EXCHANGE__CCXT_CONFIG__urls__api__public: http://hl-gateway:8080/insiders
+      FREQTRADE__EXCHANGE__CCXT_CONFIG__urls__api__private: http://hl-gateway:8080/insiders
+      FREQTRADE__EXCHANGE__CCXT_CONFIG__timeout: "90000"
+      FREQTRADE__INTERNALS__PROCESS_THROTTLE_SECS: "30"
+      FREQTRADE__CANCEL_OPEN_ORDERS_ON_EXIT: "false"
+      FREQTRADE__EXCHANGE__WALLET_ADDRESS: ""
+      FREQTRADE__EXCHANGE__PRIVATE_KEY: ""
+      FREQTRADE__DRY_RUN: "true"
+      SIGNAL_RECEIVER_URL: http://insiders-receiver:8089
+    volumes:
+      - ft_insiders_scalp_user_data:/freqtrade/user_data
+    ports:
+      - "8098:8080"
+    depends_on:
+      hl-gateway:
+        condition: service_healthy
+    healthcheck: *bot-healthcheck
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  killers-receiver:
+    image: ghcr.io/alephcasara/mt-killers-receiver:${MT_KILLERS_RECEIVER_TAG:-20261007-1}
+    restart: unless-stopped
+    container_name: killers-receiver
+    env_file: ./env/killers-receiver.env
+    environment:
+      HYPERLIQUID_INFO_URL: http://hl-gateway:8080/killers/info
+      KILLERS_FT_BASE_URL: http://ft-killers-scalp:8080
+      KILLERS_DB: /var/lib/killers/receiver-hyperliquid.sqlite
+      KILLERS_RISK_USD: "12"
+      KILLERS_MIN_MARGIN_USD: "5"
+      KILLERS_MAX_MARGIN_USD: "40"
+      KILLERS_MAX_LEVERAGE: "3"
+      KILLERS_STOP_LIMIT_RATIO: "0.98"
+      KILLERS_MIN_NOTIONAL_USD: "11.3"
+      KILLERS_REQUIRE_POSTED_SL: "true"
+      KILLERS_MAX_OPEN: "5"
+      KILLERS_BUMP_TO_MIN_NOTIONAL: "true"
+      KILLERS_MAX_BUMP_RISK_USD: "6"
+      KILLERS_POSTED_SL: "true"
+      KILLERS_TP_ALLOCATIONS: ""
+      KILLERS_TP_MODE: legacy
+      KILLERS_EXECUTION_VENUE: hyperliquid
+    volumes:
+      - killers_receiver_state:/var/lib/killers
+    ports:
+      - "8089:8089"
+    depends_on:
+      - ft-killers-scalp
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8089/healthz', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  insiders-receiver:
+    image: ghcr.io/alephcasara/mt-killers-receiver:${MT_KILLERS_RECEIVER_TAG:-20261007-1}
+    restart: unless-stopped
+    container_name: insiders-receiver
+    env_file: ./env/insiders-receiver.env
+    environment:
+      HYPERLIQUID_INFO_URL: http://hl-gateway:8080/insiders/info
+      KILLERS_FT_BASE_URL: http://ft-insiders-scalp:8080
+      KILLERS_BOT_LABEL: insiders-scalp
+      KILLERS_DB: /var/lib/killers/receiver-hyperliquid.sqlite
+      KILLERS_RISK_USD: "1.5"
+      KILLERS_MIN_MARGIN_USD: "5"
+      KILLERS_MAX_MARGIN_USD: "10"
+      KILLERS_MAX_LEVERAGE: "3"
+      KILLERS_STOP_LIMIT_RATIO: "0.98"
+      KILLERS_MIN_NOTIONAL_USD: "11.3"
+      KILLERS_REQUIRE_POSTED_SL: "true"
+      KILLERS_MAX_OPEN: "5"
+      KILLERS_POSTED_SL: "true"
+      KILLERS_EXECUTION_VENUE: hyperliquid
+    volumes:
+      - insiders_receiver_state:/var/lib/killers
+    ports:
+      - "8090:8089"
+    depends_on:
+      - ft-insiders-scalp
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8089/healthz', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  ft-dashboard:
+    image: ghcr.io/alephcasara/mt-dashboard:${MT_DASHBOARD_TAG:-20261007-1}
+    restart: unless-stopped
+    container_name: ft-dashboard
+    env_file: ./env/ft-dashboard.env
+    environment:
+      POLL_INTERVAL: "30"
+      OVERLAYS_DIR: /overlays
+      # Zeabur ran with an internal DNS suffix; bare compose names need the
+      # empty suffix, and pinning it here neutralizes a stale env-file value.
+      FLEET_DNS_SUFFIX: ""
+    volumes:
+      - dashboard_actions:/var/lib/dashboard-actions
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 192M
+
+  mt-observer:
+    image: ghcr.io/alephcasara/mt-observer:${MT_OBSERVER_TAG:-20261007-1}
+    restart: unless-stopped
+    container_name: mt-observer
+    # Chain overlay after the base file: later env_file entries win.
+    env_file:
+      - ./env/mt-observer.env
+      - ./env/mt-observer-chain.env
+    environment:
+      KILLERS_TG_SESSION: /var/lib/killers/killers.session
+      KILLERS_DB: /var/lib/killers/killers-state.sqlite
+      INSIDERS_OBSERVER_DB: /var/lib/killers/insiders-state.sqlite
+      # Channel IDs (KILLERS_TG_CHANNEL_ID, INSIDERS_TG_CHANNEL_ID,
+      # TRIAL_CHANNELS) identify the operator's signal sources: they come from
+      # env/mt-observer.env, never from the repo.
+      KILLERS_RECEIVER_URL: http://killers-receiver:8089/event
+      INSIDERS_RECEIVER_URL: http://insiders-receiver:8089/event
+      KILLERS_CLAUDE_BINARY: /usr/local/bin/mt-classify
+      KILLERS_CLAUDE_MODEL: qwen3-4b
+      # 200s: subprocess must outlive mt-classify's 180s transport timeout
+      # so failures report a clean error class instead of SIGKILL.
+      KILLERS_CLAUDE_TIMEOUT_SEC: "200"
+      # The home-LLM endpoint is a deployment value: .env next to this file
+      # (bd k1u.3) supplies it, never the repo.
+      MT_CLASSIFY_ENDPOINT: "${MT_CLASSIFY_ENDPOINT:?set in .env}"
+      MT_CLASSIFY_TIMEOUT_SEC: "180"
+    volumes:
+      - observer_state:/var/lib/killers
+    # MagicDNS does not resolve inside containers and the endpoint's
+    # certificate is issued for its FQDN, so keep the hostname in the URL and
+    # pin it here. Hostname and IP are deployment values from .env.
+    extra_hosts:
+      - "${MT_CLASSIFY_HOST:?set in .env}:${MT_CLASSIFY_HOST_IP:?set in .env}"
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
+  mt-relay:
+    # Kept from the Zeabur fleet; keep-vs-drop is bd k1u.4. Needs a fresh
+    # single-use TS_AUTHKEY in env/mt-relay.env. TS_KUBE_SECRET (a k8s no-op)
+    # is deliberately not ported.
+    image: tailscale/tailscale:v1.98.10
+    restart: unless-stopped
+    container_name: mt-relay
+    env_file: ./env/mt-relay.env
+    environment:
+      TS_HOSTNAME: mt-dash
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_USERSPACE: "true"
+    volumes:
+      - relay_tsstate:/var/lib/tailscale
+    cap_add:
+      - NET_ADMIN
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  ft-test-bollinger:
+    image: ghcr.io/alephcasara/mt-freqtrade:${MT_FREQTRADE_TAG:-20261007-1}
+    restart: unless-stopped
+    container_name: ft-test-bollinger
+    entrypoint: ["/usr/local/bin/mt-run-test-bollinger.sh"]
+    env_file: ./env/ft-test-bollinger.env
+    volumes:
+      - ft_test_bollinger_user_data:/freqtrade/user_data
+    ports:
+      - "8105:8080"
+    healthcheck: *bot-healthcheck
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  ft-test-nasos:
+    image: ghcr.io/alephcasara/mt-freqtrade:${MT_FREQTRADE_TAG:-20261007-1}
+    restart: unless-stopped
+    container_name: ft-test-nasos
+    entrypoint: ["/usr/local/bin/mt-run-test-nasos.sh"]
+    env_file: ./env/ft-test-nasos.env
+    volumes:
+      - ft_test_nasos_user_data:/freqtrade/user_data
+    ports:
+      - "8106:8080"
+    healthcheck: *bot-healthcheck
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  ft-test-elliot:
+    image: ghcr.io/alephcasara/mt-freqtrade:${MT_FREQTRADE_TAG:-20261007-1}
+    restart: unless-stopped
+    container_name: ft-test-elliot
+    entrypoint: ["/usr/local/bin/mt-run-test-elliot.sh"]
+    env_file: ./env/ft-test-elliot.env
+    volumes:
+      - ft_test_elliot_user_data:/freqtrade/user_data
+    ports:
+      - "8107:8080"
+    healthcheck: *bot-healthcheck
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  ft-test-combined:
+    image: ghcr.io/alephcasara/mt-freqtrade:${MT_FREQTRADE_TAG:-20261007-1}
+    restart: unless-stopped
+    container_name: ft-test-combined
+    entrypoint: ["/usr/local/bin/mt-run-test-combined.sh"]
+    env_file: ./env/ft-test-combined.env
+    volumes:
+      - ft_test_combined_user_data:/freqtrade/user_data
+    ports:
+      - "8108:8080"
+    healthcheck: *bot-healthcheck
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+volumes:
+  ft_short_keltner_hl_live_user_data:
+  ft_keltner_bounce_user_data:
+  ft_funding_fade_user_data:
+  ft_oi_trend_pullback_user_data:
+  ft_killers_scalp_user_data:
+  ft_insiders_scalp_user_data:
+  ft_test_bollinger_user_data:
+  ft_test_nasos_user_data:
+  ft_test_elliot_user_data:
+  ft_test_combined_user_data:
+  killers_receiver_state:
+  insiders_receiver_state:
+  observer_state:
+  dashboard_actions:
+  relay_tsstate:
