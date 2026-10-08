@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "family": "orderflow_auction_v0",
+  "kind": "research_screen_not_promotion",
+  "planned_signal_trials": 4,
+  "multiple_testing": {
+    "familywise_alpha": 0.05,
+    "method": "bonferroni",
+    "max_candidate_random_null_p_value": 0.0125
+  },
+  "sample_floor": {
+    "min_total_trades": 30,
+    "interpretation": "screening floor only; statistical sufficiency still depends on effect size and uncertainty"
+  },
+  "temporal_stability": {
+    "min_profitable_window_fraction": 0.6666666667,
+    "max_worst_window_drawdown_pct": 35.0
+  },
+  "robustness": {
+    "allowed_engine_verdicts": ["ROBUST", "ACCEPTABLE"]
+  },
+  "execution_friction": {
+    "min_additional_round_trip_break_even_bps": 10.0,
+    "interpretation": "candidate must retain positive mean trade expectancy after at least 10 bps of extra round-trip friction beyond the Freqtrade-recorded baseline"
+  },
+  "mandatory": [
+    "lookahead analysis passed",
+    "all chronological windows measured",
+    "matched random null measured",
+    "friction stress measured",
+    "Monte Carlo measured"
+  ],
+  "boundary": "Passing this screen means only that the candidate may proceed to untouched holdout / portfolio admission / forward testing. It never authorizes live capital."
+}

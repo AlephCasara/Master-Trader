@@ -1,0 +1,149 @@
+{
+  "schema_version": 1,
+  "family": "orderflow_auction_v0",
+  "status": "research_only",
+  "runtime_authority": false,
+  "candidates": [
+    "AuctionExpansionV0",
+    "RetestContinuationV0",
+    "FailedAuctionReversionV0",
+    "AbsorptionReversalV0"
+  ],
+  "market": {
+    "exchange": "binance",
+    "trading_mode": "futures",
+    "margin_mode": "isolated",
+    "timeframe": "5m",
+    "detail_timeframe": "1m",
+    "can_short": true,
+    "image": "freqtradeorg/freqtrade:2026.9"
+  },
+  "development_universe": {
+    "selection_rule": "liquid major USDT perpetuals selected before inspection of the family results; this is development, never the untouched asset holdout",
+    "selection_timestamp": "2026-10-08T00:00:00Z",
+    "dynamic_pairlist_forbidden": true,
+    "pairs": [
+      "BTC/USDT:USDT",
+      "ETH/USDT:USDT",
+      "SOL/USDT:USDT",
+      "BNB/USDT:USDT",
+      "XRP/USDT:USDT",
+      "DOGE/USDT:USDT",
+      "ADA/USDT:USDT",
+      "LINK/USDT:USDT"
+    ]
+  },
+  "data_contract": {
+    "raw_public_trades_required": true,
+    "ohlcv_required": true,
+    "ohlcv_as_orderflow_proxy_forbidden": true,
+    "freqtrade_use_public_trades": true,
+    "required_strategy_columns": ["trades"],
+    "freqtrade_image_must_be_pinned": true,
+    "raw_trade_snapshot_hash_required_for_decision_run": true
+  },
+  "signal_contract": {
+    "channel_bars": 24,
+    "flow_baseline_bars": 96,
+    "absolute_flow_z_threshold": 1.5,
+    "parameters_frozen": true,
+    "signal_hyperopt_allowed": false,
+    "changing_any_signal_constant_creates_new_trial": true
+  },
+  "execution_contract": {
+    "entry_after_completed_candle": true,
+    "entry_order_type": "market",
+    "exit_order_type": "market",
+    "phase_a_time_exit_minutes": 60,
+    "catastrophe_stoploss": -0.05,
+    "minimal_roi_non_binding": true,
+    "trailing_stop": false,
+    "leverage": 1.0,
+    "stake_amount_usdt": 100.0,
+    "max_open_trades": 5,
+    "reason": "Phase A isolates entry information. Passive fills, profile targets, partials and break-even logic are not granted before the signal itself survives falsification."
+  },
+  "cost_contract": {
+    "fee_source": "explicit conservative Binance USD-M regular-user taker baseline",
+    "fee_ratio_per_side": 0.0005,
+    "fee_bps_per_side": 5.0,
+    "round_trip_fee_bps": 10.0,
+    "applies_to": "market entry and market exit",
+    "additional_round_trip_friction_stress_bps": [0, 5, 10, 20, 40],
+    "note": "The explicit fee prevents historical decision runs from drifting with future CCXT/exchange-default fee metadata. Account-specific VIP discounts are upside and must not be assumed in V0."
+  },
+  "candidate_hypotheses": {
+    "AuctionExpansionV0": "A first close outside a completed price channel has stronger 60-minute conditional expectancy when the same candle has unusually strong same-direction reported public-trade flow.",
+    "RetestContinuationV0": "Conditioning an already confirmed breakout on a one-bar retest/reclaim plus supportive public-trade flow improves conditional expectancy relative to immediate expansion entries.",
+    "FailedAuctionReversionV0": "An excursion beyond a completed channel that closes back inside has short-horizon reversion expectancy even without a directional flow filter.",
+    "AbsorptionReversalV0": "Extreme reported public-trade flow that fails to hold a channel excursion adds information beyond the price-only failed-auction condition."
+  },
+  "phase_a": {
+    "purpose": "measure entry information before exit engineering",
+    "planned_signal_trials": 4,
+    "common_exit_minutes": 60,
+    "required_controls": [
+      "price-only structural control where applicable",
+      "frequency-and-side-matched randomized null",
+      "per-asset results",
+      "long/short split"
+    ]
+  },
+  "phase_b_deferred": [
+    "POC/value-area target",
+    "low-volume-node target",
+    "break-even movement",
+    "partial profit taking",
+    "flow reversal exit",
+    "state invalidation exit",
+    "session gating",
+    "signal-strength sizing"
+  ],
+  "quant_finance_pipeline": [
+    "freeze strategy source, manifest, pairlist, timerange, data snapshot, explicit fee contract and Freqtrade image",
+    "download and validate 1m/5m OHLCV plus raw public trades for every frozen pair",
+    "run deterministic unit tests",
+    "run Freqtrade lookahead-analysis",
+    "run Freqtrade recursive-analysis when compatible with the beta orderflow path",
+    "run full-period viability backtest with exported trades and explicit fee",
+    "run fixed-parameter chronological validation windows without hyperopt",
+    "report aggregate and per-asset performance, long/short split, turnover and time-in-market",
+    "run Monte Carlo trade-order/missed-entry robustness",
+    "stress additional execution friction above the explicit fee baseline",
+    "compare with frequency/exposure-matched randomized null",
+    "freeze candidate before untouched asset/regime holdout",
+    "run portfolio marginal-admission gate against actual incumbent account returns",
+    "only then permit immutable forward/test-lane epoch and Probe review"
+  ],
+  "minimum_report": [
+    "total_trades",
+    "trades_by_asset",
+    "long_short_split",
+    "net_profit_after_declared_costs",
+    "profit_factor",
+    "sharpe",
+    "sortino",
+    "max_drawdown",
+    "turnover",
+    "time_in_market",
+    "worst_asset",
+    "chronological_window_results",
+    "monte_carlo",
+    "random_null_percentile",
+    "additional_cost_break_even_bps"
+  ],
+  "promotion": {
+    "automatic_live_promotion": false,
+    "automatic_capital_change": false,
+    "test_lane_requires_human_review": true,
+    "probe_requires_human_review": true
+  },
+  "falsification": [
+    "flow-conditioned candidate does not improve its structural price-only control out of sample",
+    "result is not better than a matched randomized null",
+    "declared fees plus plausible additional friction erase the edge",
+    "effect depends on a single asset, direction or chronological window",
+    "candidate constants are changed after decision data is inspected without a new trial identity",
+    "orderflow features cannot be reproduced from the frozen raw-trade snapshot"
+  ]
+}
