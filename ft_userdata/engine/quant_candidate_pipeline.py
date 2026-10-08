@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Top-level Quant Finance pipeline for research-only strategy candidates.
 
-`candidate_runner` performs the expensive validation stages.  This module adds
-the decision-report layer promised by the candidate manifest: per-asset/side,
-turnover and time-in-market diagnostics derived from the exact exported trades.
-It never changes a strategy or authorizes capital.
+`candidate_runner` performs the expensive validation stages. This module adds
+the decision-report layer promised by the candidate manifest: an explicit cost
+contract plus per-asset/side, turnover and time-in-market diagnostics derived
+from the exact exported trades. It never changes a strategy or authorizes capital.
 """
 
 from __future__ import annotations
@@ -13,10 +13,33 @@ import argparse
 import json
 from pathlib import Path
 
-from . import registry
+from . import config_builder, registry
 from .calibration import _load_backtest_trades
 from .candidate_runner import run_family
 from .trade_diagnostics import summarize_trades
+
+
+def _manifest_path(family: str) -> Path:
+    return registry.FT_DIR / "research_candidates" / f"{family}.json"
+
+
+def _apply_explicit_cost_contract(family: str) -> dict:
+    """Pin the per-side fee in generated Freqtrade research configs.
+
+    Relying on whatever fee metadata CCXT returns in a future run would make a
+    historical decision artifact non-reproducible. V0 therefore declares a
+    conservative market/taker fee explicitly in its immutable manifest.
+    """
+    manifest = json.loads(_manifest_path(family).read_text(encoding="utf-8"))
+    contract = manifest.get("cost_contract") or {}
+    fee = contract.get("fee_ratio_per_side")
+    if fee is None:
+        raise ValueError("candidate manifest must declare cost_contract.fee_ratio_per_side")
+    fee = float(fee)
+    if not (0.0 < fee < 0.01):
+        raise ValueError(f"invalid candidate per-side fee ratio: {fee}")
+    config_builder.BASE_CONFIG["fee"] = fee
+    return contract
 
 
 def _exported_trades(candidate: dict) -> list[dict]:
@@ -48,8 +71,11 @@ def _candidate_summary(name: str, candidate: dict) -> dict:
         "viability": viability.get("classification"),
         "total_trades": diagnostics.get("total_trades", metrics.get("total_trades")),
         "assets_traded": diagnostics.get("assets_traded"),
+        "trades_by_asset": diagnostics.get("per_asset"),
         "long_trades": long_short.get("long_trades"),
         "short_trades": long_short.get("short_trades"),
+        "long_sum_profit_ratio": long_short.get("long_sum_profit_ratio"),
+        "short_sum_profit_ratio": long_short.get("short_sum_profit_ratio"),
         "net_profit": metrics.get("total_profit"),
         "profit_factor": metrics.get("profit_factor"),
         "sharpe": metrics.get("sharpe"),
@@ -57,8 +83,12 @@ def _candidate_summary(name: str, candidate: dict) -> dict:
         "max_drawdown_pct": metrics.get("max_drawdown_pct"),
         "worst_asset": worst.get("pair"),
         "worst_asset_sum_profit_ratio": worst.get("sum_profit_ratio"),
+        "top_positive_pnl_concentration": diagnostics.get("top_positive_pnl_concentration"),
         "turnover_usdt": turnover.get("gross_entry_exit_notional_usdt"),
         "time_in_market_union_fraction": tim.get("union_fraction"),
+        "gross_position_hours": tim.get("gross_position_hours"),
+        "exit_reasons": diagnostics.get("exit_reasons"),
+        "duration_minutes": diagnostics.get("duration_minutes"),
         "random_null_percentile": null.get("percentile_vs_null"),
         "random_null_upper_tail_p": null.get("upper_tail_p_value"),
         "additional_cost_break_even_bps": friction.get("additional_round_trip_break_even_bps"),
@@ -76,9 +106,10 @@ def run_quant_finance(
 ) -> dict:
     """Run candidates and persist a complete decision report.
 
-    The returned report is evidence for research triage only.  Even a fully
+    The returned report is evidence for research triage only. Even a fully
     passing report has `promotion_authority=false` and cannot alter runtime.
     """
+    cost_contract = _apply_explicit_cost_contract(family)
     result = run_family(family, timerange, mode, strategy, download)
 
     for name, candidate in result["candidates"].items():
@@ -89,6 +120,7 @@ def run_quant_finance(
         "kind": "quant_finance_candidate_decision_report",
         "timerange": timerange,
         "family": family,
+        "cost_contract": cost_contract,
         "strategies": [
             _candidate_summary(name, candidate)
             for name, candidate in result["candidates"].items()
