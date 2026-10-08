@@ -33,8 +33,10 @@ def test_timeframe_tolerance_matches_candle_size():
     assert mod._timeframe_delta("1h") == pd.Timedelta(hours=1)
 
 
-def test_canonical_pipeline_requires_snapshot_coverage_before_decision_report():
+def test_canonical_pipeline_invalidates_preliminary_artifact_on_bad_coverage():
     source = PIPELINE.read_text(encoding="utf-8")
-    assert "require_snapshot_coverage" in source
+    assert "validate_snapshot_coverage" in source
     assert 'result["data_coverage"] = data_coverage' in source
-    assert '"data_coverage_passed": data_coverage["passed"]' in source
+    assert "_invalidate_for_data_coverage" in source
+    assert 'screen["passed"] = False' in source
+    assert '"data_coverage_passed": True' in source
