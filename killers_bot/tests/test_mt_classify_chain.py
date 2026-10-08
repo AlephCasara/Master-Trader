@@ -6,7 +6,9 @@ O que precisa ser provado:
 - um candidato com contador no limite ou marcado exhausted é pulado; a
   primária (sem rpd) nunca é pulada por cota
 - linhas de estado datadas de outro dia (Pacific) recomeçam zeradas
-- 429 marca o modelo exhausted; só chamada HTTP 200 completa gasta contador
+- 429 marca o modelo exhausted, exceto cota por minuto (quotaId PerMinute),
+  que só pula para o próximo; só chamada HTTP 200 completa gasta contador
+- conteúdo misturado (rascunhos + JSON) entrega o último JSON com "kind"
 - main(): todos os candidatos falhando sai com exit 1 e o ÚLTIMO erro no
   stderr; um 429 no meio da cadeia entrega a resposta do próximo candidato
 """
@@ -268,6 +270,43 @@ def test_main_429_e_5xx_no_meio_entregam_o_proximo_candidato(
     # entrada com response_format=false não pede json_object (nem sampling Qwen)
     assert "response_format" not in calls[2]["body"]
     assert calls[2]["body"]["temperature"] == 0
+
+
+PER_MINUTE_429 = json.dumps([{"error": {"code": 429, "details": [{
+    "@type": "type.googleapis.com/google.rpc.QuotaFailure",
+    "violations": [{"quotaId":
+                    "GenerateRequestsPerMinutePerProjectPerModel-FreeTier"}],
+}]}}]).encode()
+
+
+def test_main_429_por_minuto_pula_sem_marcar_exhausted(
+        monkeypatch, tmp_path, capsys):
+    state = tmp_path / "state.json"
+    env = dict(CHAIN_ENV, MT_GEMINI_KEY="k",
+               MT_CLASSIFY_STATE=str(state))
+    calls = []
+    _run_main(monkeypatch, env, {
+        "qwen3-4b": urllib.request.URLError("home box off"),
+        "gemini-3.5-flash-lite": _http_error(429, PER_MINUTE_429),
+        "gemma-4-26b": _ok_payload('{"kind": "chat"}'),
+    }, calls)
+    out = capsys.readouterr()
+    assert out.out.strip() == '{"kind": "chat"}'
+    assert "per-minute" in out.err
+    persisted = json.loads(state.read_text())
+    assert "gemini-3.5-flash-lite" not in persisted
+
+
+def test_main_conteudo_com_rascunhos_entrega_ultimo_json_com_kind(
+        monkeypatch, tmp_path, capsys):
+    env = dict(CHAIN_ENV, MT_CLASSIFY_STATE=str(tmp_path / "state.json"))
+    mixed = ('<thought>Rascunho: {"kind": "chat", "symbol": null}\n'
+             'Revisando...</thought>\n'
+             '{"kind": "open", "symbol": "ETH", "direction": "long"}')
+    _run_main(monkeypatch, env, {"qwen3-4b": _ok_payload(mixed)}, [])
+    out = capsys.readouterr()
+    assert json.loads(out.out) == {
+        "kind": "open", "symbol": "ETH", "direction": "long"}
 
 
 def test_main_falha_total_exit_1_com_ultimo_erro(monkeypatch, tmp_path, capsys):

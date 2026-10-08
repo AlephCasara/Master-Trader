@@ -57,8 +57,9 @@ FALLBACK_STATE_PATH = "/tmp/mt-classify-state.json"
 
 # Quota outcomes (bd Master-Trader-yun, 2026-10-02): only a completed HTTP
 # 200 call spends budget (success or not — the provider counted it); a 429
-# marks the model exhausted for the rest of the Pacific day; transport
-# failures spend nothing.
+# marks the model exhausted for the rest of the Pacific day, unless the body
+# names a per-minute quota (Gemini quotaId "...PerMinute..."), which only
+# skips to the next candidate; transport failures spend nothing.
 OUTCOME_COMPLETED = "completed"
 OUTCOME_RATE_LIMITED = "rate_limited"
 OUTCOME_FAILED = "failed"
@@ -286,6 +287,14 @@ def request_candidate(candidate, prompt, timeout) -> str:
         if first_newline != -1:
             text = text[first_newline + 1:]
         text = text.removesuffix("```").strip()
+    try:
+        json.loads(text)
+    except json.JSONDecodeError:
+        best = extract_last_kind_json(text)
+        if best is not None:
+            text = json.dumps(best)
+            print("mt-classify: mixed content; captured last kind-JSON",
+                  file=sys.stderr)
     return text
 
 
@@ -332,9 +341,13 @@ def main() -> None:
         try:
             text = request_candidate(candidate, prompt, timeout)
         except urllib.error.HTTPError as exc:
-            detail = exc.read()[:300]
+            body = exc.read()
+            detail = body[:300]
             last_error = f"mt-classify: HTTP {exc.code}: {detail!r}"
-            if exc.code == 429:
+            if exc.code == 429 and b"PerMinute" in body:
+                print(f"mt-classify: {name}: HTTP 429 per-minute limit — "
+                      f"trying next candidate", file=sys.stderr)
+            elif exc.code == 429:
                 apply_outcome(state, name, OUTCOME_RATE_LIMITED)
                 save_state(state_path, state)
                 print(f"mt-classify: {name}: HTTP 429 — model marked "
