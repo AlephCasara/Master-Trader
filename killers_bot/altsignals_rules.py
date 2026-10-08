@@ -6,28 +6,19 @@ is the observer's fast path for this lane and ALWAYS returns a classification
 dict in the schema `classifier.classify()` produces. Anything it cannot read
 is a `chat`, never None, so nothing falls through to a model.
 
-Safety nets here are only the channel-specific ones (typo guard, repost dedup,
-optional Hyperliquid universe check). The receiver keeps its own risk gates.
+Safety nets here are only the channel-specific ones (typo guard, repost
+dedup). The receiver keeps its own risk gates.
 """
-import json
 import logging
 import math
-import os
 import re
-import time
-import urllib.request
 from datetime import datetime, timezone
 from typing import Optional
-from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
 DUP_WINDOW_SEC = 900
 MAX_SL_DISTANCE = 0.25
-HL_CACHE_SEC = 300
-HL_RETRY_SEC = 30
-HL_TIMEOUT_SEC = 3
-HL_INFO_URL_ENV = "TRIAL_ALTSIGNALS_HL_INFO_URL"
 
 _NUM = r"(\d+(?:\.\d+)?)"
 _HDR_RE = re.compile(
@@ -134,47 +125,6 @@ def _find_duplicate(conn, msg_id: int, symbol: str, direction: str,
     return None
 
 
-# ── Hyperliquid perp universe (optional) ───────────────────────────────────
-
-_universe_cache: dict = {"url": None, "at": 0.0, "names": None, "failed_at": 0.0}
-
-
-def _fetch_universe(url: str) -> set:
-    req = urllib.request.Request(
-        url, data=json.dumps({"type": "meta"}).encode(),
-        headers={"Content-Type": "application/json"}, method="POST")
-    with urllib.request.urlopen(req, timeout=HL_TIMEOUT_SEC) as resp:
-        body = json.loads(resp.read())
-    return {u["name"] for u in body["universe"]}
-
-
-def _on_hyperliquid(symbol: str) -> bool:
-    """False only when the universe was read and the coin is absent. Any
-    error answers True (fail open): the receiver is the fail-closed backstop."""
-    url = os.getenv(HL_INFO_URL_ENV, "").strip()
-    if not url:
-        return True
-    cache = _universe_cache
-    now = time.monotonic()
-    if cache["url"] != url:
-        cache.update(url=url, at=0.0, names=None, failed_at=0.0)
-    fresh = cache["names"] is not None and now - cache["at"] < HL_CACHE_SEC
-    if not fresh:
-        if cache["failed_at"] and now - cache["failed_at"] < HL_RETRY_SEC:
-            return True
-        try:
-            if urlparse(url).scheme not in ("http", "https"):
-                raise ValueError("unsupported scheme")
-            cache.update(names=_fetch_universe(url), at=now, failed_at=0.0)
-        except Exception as e:
-            cache["failed_at"] = now
-            logger.warning("[ALTSIGNALS] HL universe fetch failed (%s) — "
-                           "failing open", e)
-            return True
-    names = cache["names"]
-    return symbol in names or f"k{symbol}" in names
-
-
 # ── Entry point ────────────────────────────────────────────────────────────
 
 
@@ -216,11 +166,6 @@ def _parse_open(text: str, msg_id: int, conn, date) -> Optional[dict]:
             return _classification(
                 msg_id, "chat", f"duplicate_of={dup}", symbol=symbol,
                 direction=direction, entry=entry, sl=sl)
-
-    if not _on_hyperliquid(symbol):
-        return _classification(
-            msg_id, "chat", "not_on_hyperliquid", symbol=symbol,
-            direction=direction, entry=entry, sl=sl)
 
     return _classification(
         msg_id, "open",

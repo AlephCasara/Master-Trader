@@ -1,5 +1,7 @@
 """Production dashboard registry and account-group regression tests."""
 
+import asyncio
+
 import pytest
 
 from app import FLEET_REGISTRY, _bot_links, _deployment_fleet
@@ -77,3 +79,37 @@ def test_deployment_fleet_rejects_unknown_keys_loudly(monkeypatch):
     monkeypatch.setenv("FLEET_BOTS", "short-keltner-hl, typo-bot")
     with pytest.raises(ValueError, match="typo-bot"):
         _deployment_fleet(FLEET_REGISTRY)
+
+
+def test_altsignals_e_um_receiver_driven_binance_futures_dry_run():
+    bot = _by_key()["altsignals-ft"]
+    assert bot["account_group"] == "binance-altsignals"
+    assert bot["venue"] == "binance"
+    assert bot["receiver_url"] == "http://altsignals-receiver:8089"
+    assert "lineage" not in bot
+
+
+def test_altsignals_nunca_usa_os_caminhos_da_hyperliquid(monkeypatch):
+    import app
+
+    bot = _by_key()["altsignals-ft"]
+    assert app._native_stop_verification(bot, [], [])["status"] == "not-applicable"
+
+    chamadas = []
+
+    async def fake_binance(pair, timeframe, limit, start_ms, end_ms):
+        chamadas.append(pair)
+        return {"source": "binance"}
+
+    monkeypatch.setattr(app, "api_binance_candles", fake_binance)
+    out = asyncio.run(app.api_trade_candles("altsignals-ft", "ETH/USDT:USDT"))
+    assert out == {"source": "binance"}
+    assert chamadas == ["ETH/USDT:USDT"]
+
+
+def test_link_do_tradingview_de_futuros_binance_usa_o_perp():
+    bot = _by_key()["altsignals-ft"]
+    trade = {"pair": "ETH/USDT:USDT", "stake_amount": 10}
+    links = _bot_links(bot, [trade], [])
+    assert links["tradingview_top_pair"] == (
+        "https://www.tradingview.com/chart/?symbol=BINANCE:ETHUSDT.P")

@@ -10,7 +10,6 @@ O que precisa ser provado:
   da propria mensagem nao e marcada como duplicata
 - avisos de fechamento viram `close_full` com pct assinado; fill, TP parcial,
   `close` solto e texto qualquer viram `chat`
-- a allowlist da Hyperliquid e opcional, em cache, e falha ABERTA
 - a linha `TARGETS:` anexada para o receiver e lida pelo extrator do receiver
 
 Todas as mensagens sao sinteticas: imitam o formato, com moedas e precos
@@ -18,8 +17,6 @@ inventados.
 """
 import importlib
 import importlib.util
-import io
-import json
 import sqlite3
 import sys
 from datetime import datetime, timedelta, timezone
@@ -44,12 +41,6 @@ LONG_ETH = ("Coin: ETHUSDT Long\nLeverage: Isolated x10\nEntry: 2500.5\n"
             "Target 1: 2550\nTarget 2: 2600\nSL: 2450")
 SHORT_ETH = ("Coin: ETHUSDT Short\nLeverage: Isolated x10\nEntry: 2500.5\n"
              "Target 1: 2450\nTarget 2: 2400\nSL: 2550")
-
-
-@pytest.fixture(autouse=True)
-def universo_limpo(monkeypatch):
-    monkeypatch.delenv(rules.HL_INFO_URL_ENV, raising=False)
-    rules._universe_cache.update(url=None, at=0.0, names=None, failed_at=0.0)
 
 
 @pytest.fixture()
@@ -241,102 +232,6 @@ def test_fill_confirm_guarda_a_entrada_media_nas_notas():
         "#BTC/USDT All entries achieved\nAverage Entry Price: 86000", 9)
     assert "86000" in cls["notes"]
     assert cls["symbol"] == "BTC"
-
-
-# ── Allowlist da Hyperliquid ───────────────────────────────────────────────
-
-
-@pytest.fixture()
-def universo(monkeypatch):
-    monkeypatch.setenv(rules.HL_INFO_URL_ENV, "http://hl-info.invalid/info")
-    chamadas = []
-
-    def fake(url):
-        chamadas.append(url)
-        return {"ETH", "BTC", "kPEPE"}
-
-    monkeypatch.setattr(rules, "_fetch_universe", fake)
-    return chamadas
-
-
-def test_moeda_fora_do_universo_vira_chat(universo):
-    texto = LONG_ETH.replace("ETHUSDT", "ZZZUSDT")
-    cls = rules.classify_altsignals(texto, 3)
-    assert cls["kind"] == "chat"
-    assert cls["notes"] == "not_on_hyperliquid"
-    assert cls["symbol"] == "ZZZ"
-
-
-def test_moeda_no_universo_continua_open(universo):
-    assert rules.classify_altsignals(LONG_ETH, 3)["kind"] == "open"
-
-
-def test_nome_com_prefixo_k_da_hyperliquid_e_aceito(universo):
-    texto = LONG_ETH.replace("ETHUSDT", "PEPEUSDT")
-    assert rules.classify_altsignals(texto, 3)["kind"] == "open"
-
-
-def test_universo_fica_em_cache(universo):
-    for i in range(3):
-        rules.classify_altsignals(LONG_ETH, i)
-    assert len(universo) == 1
-
-
-def test_universo_expirado_e_buscado_de_novo(universo, monkeypatch):
-    rules.classify_altsignals(LONG_ETH, 1)
-    rules._universe_cache["at"] -= rules.HL_CACHE_SEC + 1
-    rules.classify_altsignals(LONG_ETH, 2)
-    assert len(universo) == 2
-
-
-def test_erro_na_hyperliquid_falha_aberto(monkeypatch):
-    monkeypatch.setenv(rules.HL_INFO_URL_ENV, "http://hl-info.invalid/info")
-    chamadas = []
-
-    def quebra(url):
-        chamadas.append(url)
-        raise OSError("connection refused")
-
-    monkeypatch.setattr(rules, "_fetch_universe", quebra)
-    assert rules.classify_altsignals(LONG_ETH, 1)["kind"] == "open"
-    assert rules.classify_altsignals(LONG_ETH, 2)["kind"] == "open"
-    assert len(chamadas) == 1, "falha recente nao deve bloquear cada mensagem"
-
-
-def test_url_com_esquema_estranho_falha_aberto(monkeypatch):
-    monkeypatch.setenv(rules.HL_INFO_URL_ENV, "file:///etc/passwd")
-    monkeypatch.setattr(rules, "_fetch_universe",
-                        lambda url: pytest.fail("nao deveria buscar"))
-    assert rules.classify_altsignals(LONG_ETH, 1)["kind"] == "open"
-
-
-def test_sem_variavel_de_ambiente_nao_consulta_nada(monkeypatch):
-    monkeypatch.setattr(rules, "_fetch_universe",
-                        lambda url: pytest.fail("nao deveria buscar"))
-    assert rules.classify_altsignals(LONG_ETH, 1)["kind"] == "open"
-
-
-def test_fetch_universe_faz_post_de_meta_e_le_os_nomes(monkeypatch):
-    vistos = {}
-
-    class Resposta(io.BytesIO):
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-    def fake_urlopen(req, timeout):
-        vistos["method"] = req.get_method()
-        vistos["body"] = json.loads(req.data)
-        vistos["timeout"] = timeout
-        return Resposta(json.dumps(
-            {"universe": [{"name": "BTC"}, {"name": "kPEPE"}]}).encode())
-
-    monkeypatch.setattr(rules.urllib.request, "urlopen", fake_urlopen)
-    assert rules._fetch_universe("http://hl-info.invalid/info") == {"BTC", "kPEPE"}
-    assert vistos == {"method": "POST", "body": {"type": "meta"},
-                      "timeout": rules.HL_TIMEOUT_SEC}
 
 
 # ── Linha TARGETS para o receiver ──────────────────────────────────────────

@@ -61,7 +61,8 @@ OI_ROUND4_EPOCH_TS_MS = 1787619881124  # 2026-08-25T01:04:41.124Z
 # Test lane starts on the Zeabur deployment with empty DBs (2026-10-02).
 # Machinery-exercising bots, never a measurement epoch.
 TEST_LANE_EPOCH_TS_MS = 1790904000000  # 2026-10-02T01:20:00Z
-# AltSignals trial lane promoted to a copy-trader bot (2026-10-08); empty DB.
+# AltSignals trial lane promoted to a Binance futures dry-run copier
+# (2026-10-08); empty DB.
 ALTSIGNALS_EPOCH_TS_MS = 1791417600000  # 2026-10-08T00:00:00Z
 
 FLEET_REGISTRY: list[dict[str, Any]] = [
@@ -243,17 +244,19 @@ FLEET_REGISTRY: list[dict[str, Any]] = [
         "baseline": None,
     },
     # altsignals-scalp (2026-10-08): copier of the AltSignals VIP trial channel.
-    # Fed by the observer's deterministic parser (no LLM) into its own receiver
-    # and Hyperliquid account group. Observational + no_baseline like the other
-    # copy-traders; it has no legacy dry-run lineage.
+    # Fed by the observer's deterministic parser (no LLM) into its own receiver,
+    # executed as a Binance USDT-M futures dry-run. Venue is not "hyperliquid",
+    # so every venue branch (candles, TradingView link, native-stop check)
+    # takes the Binance path. Observational + no_baseline like the other
+    # copy-traders; it has no legacy lineage.
     {
         "key": "altsignals-ft",
         "name": "AltSignalsScalp",
         "label": "altsignals-scalp",
         "url": "http://ft-altsignals-scalp:8080",
-        "account_group": "hyperliquid-altsignals",
+        "account_group": "binance-altsignals",
         "strategy_kind": "copy-trader",
-        "venue": "hyperliquid",
+        "venue": "binance",
         "epoch_start_ts_ms": ALTSIGNALS_EPOCH_TS_MS,
         "epoch_label": "round 1 · parser-only signals · near-market entry",
         "strategy_version": "AltSignalsScalp · r1",
@@ -1561,10 +1564,11 @@ def _bot_links(bot: dict, open_trades: list[dict], per_pair: list[dict]) -> dict
     tv_url: str | None = None
     if tv_pair:
         base = tv_pair.split("/", 1)[0]
+        is_futures = is_futures or ":" in tv_pair
         if bot.get("venue") == "hyperliquid" and is_futures:
             tv_url = f"https://www.tradingview.com/chart/?symbol=HYPERLIQUID:{base}USD"
         else:
-            symbol = tv_pair.replace("/", "")
+            symbol = tv_pair.split(":", 1)[0].replace("/", "")
             suffix = ".P" if is_futures else ""
             tv_url = f"https://www.tradingview.com/chart/?symbol=BINANCE:{symbol}{suffix}"
 
