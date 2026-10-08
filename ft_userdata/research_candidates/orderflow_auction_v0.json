@@ -63,6 +63,15 @@
     "max_open_trades": 5,
     "reason": "Phase A isolates entry information. Passive fills, profile targets, partials and break-even logic are not granted before the signal itself survives falsification."
   },
+  "cost_contract": {
+    "fee_source": "explicit conservative Binance USD-M regular-user taker baseline",
+    "fee_ratio_per_side": 0.0005,
+    "fee_bps_per_side": 5.0,
+    "round_trip_fee_bps": 10.0,
+    "applies_to": "market entry and market exit",
+    "additional_round_trip_friction_stress_bps": [0, 5, 10, 20, 40],
+    "note": "The explicit fee prevents historical decision runs from drifting with future CCXT/exchange-default fee metadata. Account-specific VIP discounts are upside and must not be assumed in V0."
+  },
   "candidate_hypotheses": {
     "AuctionExpansionV0": "A first close outside a completed price channel has stronger 60-minute conditional expectancy when the same candle has unusually strong same-direction reported public-trade flow.",
     "RetestContinuationV0": "Conditioning an already confirmed breakout on a one-bar retest/reclaim plus supportive public-trade flow improves conditional expectancy relative to immediate expansion entries.",
@@ -91,16 +100,16 @@
     "signal-strength sizing"
   ],
   "quant_finance_pipeline": [
-    "freeze strategy source, manifest, pairlist, timerange, data snapshot, cost contract and Freqtrade image",
+    "freeze strategy source, manifest, pairlist, timerange, data snapshot, explicit fee contract and Freqtrade image",
     "download and validate 1m/5m OHLCV plus raw public trades for every frozen pair",
     "run deterministic unit tests",
     "run Freqtrade lookahead-analysis",
     "run Freqtrade recursive-analysis when compatible with the beta orderflow path",
-    "run full-period viability backtest with exported trades",
+    "run full-period viability backtest with exported trades and explicit fee",
     "run fixed-parameter chronological validation windows without hyperopt",
-    "report aggregate and per-asset performance, long/short split, turnover and drawdown",
+    "report aggregate and per-asset performance, long/short split, turnover and time-in-market",
     "run Monte Carlo trade-order/missed-entry robustness",
-    "stress additional execution friction",
+    "stress additional execution friction above the explicit fee baseline",
     "compare with frequency/exposure-matched randomized null",
     "freeze candidate before untouched asset/regime holdout",
     "run portfolio marginal-admission gate against actual incumbent account returns",
