@@ -61,6 +61,8 @@ OI_ROUND4_EPOCH_TS_MS = 1787619881124  # 2026-08-25T01:04:41.124Z
 # Test lane starts on the Zeabur deployment with empty DBs (2026-10-02).
 # Machinery-exercising bots, never a measurement epoch.
 TEST_LANE_EPOCH_TS_MS = 1790904000000  # 2026-10-02T01:20:00Z
+# AltSignals trial lane promoted to a copy-trader bot (2026-10-08); empty DB.
+ALTSIGNALS_EPOCH_TS_MS = 1791417600000  # 2026-10-08T00:00:00Z
 
 FLEET_REGISTRY: list[dict[str, Any]] = [
     {
@@ -240,6 +242,28 @@ FLEET_REGISTRY: list[dict[str, Any]] = [
         "no_baseline": True,
         "baseline": None,
     },
+    # altsignals-scalp (2026-10-08): copier of the AltSignals VIP trial channel.
+    # Fed by the observer's deterministic parser (no LLM) into its own receiver
+    # and Hyperliquid account group. Observational + no_baseline like the other
+    # copy-traders; it has no legacy dry-run lineage.
+    {
+        "key": "altsignals-ft",
+        "name": "AltSignalsScalp",
+        "label": "altsignals-scalp",
+        "url": "http://ft-altsignals-scalp:8080",
+        "account_group": "hyperliquid-altsignals",
+        "strategy_kind": "copy-trader",
+        "venue": "hyperliquid",
+        "epoch_start_ts_ms": ALTSIGNALS_EPOCH_TS_MS,
+        "epoch_label": "round 1 · parser-only signals · near-market entry",
+        "strategy_version": "AltSignalsScalp · r1",
+        "entry_gate_label": "external signal + near-market entry + posted stop",
+        "receiver_url": "http://altsignals-receiver:8089",
+        "receiver_token_env": "ALTSIGNALS_RECEIVER_TOKEN",
+        "observational": True,
+        "no_baseline": True,
+        "baseline": None,
+    },
     # ── Test lane (bd test lane 2026-10-02) ─────────────────────────────────
     # Busy dry-run bots whose only purpose is exercising the machinery fast
     # (dashboard polling, gates counting, equity rendering, incidents). They
@@ -340,6 +364,7 @@ STRATEGY_EXIT_RULES: dict[str, dict[str, Any]] = {
     ]},
     "killers-ft": {"strategy": "KillersScalpV1", "rules": [], "receiver_driven": True},
     "insiders-ft": {"strategy": "KillersScalpV1", "rules": [], "receiver_driven": True},
+    "altsignals-ft": {"strategy": "KillersScalpV1", "rules": [], "receiver_driven": True},
     # Test lane (dry-run machinery exercisers, not measurement epochs).
     # Exit stacks verified in strategy source; see
     # .local/internal-docs/dashboard-numbers.md section 4. The three stock
@@ -725,6 +750,7 @@ SERVICE_API_SLUGS = {
     "oi-trend-pullback": "OITREND",
     "ft-killers-scalp": "KILLERS",
     "ft-insiders-scalp": "INSIDERS",
+    "ft-altsignals-scalp": "ALTSIGNALS",
     "ft-short-keltner-hl-live": "SHORTKELTNER",
 }
 

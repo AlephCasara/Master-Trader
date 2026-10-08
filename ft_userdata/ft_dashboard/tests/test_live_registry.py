@@ -18,6 +18,7 @@ def test_dashboard_tracks_every_current_live_executor():
         "short-keltner-hl",
         "killers-ft",
         "insiders-ft",
+        "altsignals-ft",
         # Test lane (2026-10-02): machinery-exercising bots, never epochs.
         "test-bollinger",
         "test-nasos",
@@ -45,6 +46,7 @@ def test_shared_binance_wallet_has_one_account_group():
 
     assert bots["killers-ft"]["account_group"] != "binance-spot"
     assert bots["insiders-ft"]["account_group"] != "binance-spot"
+    assert bots["altsignals-ft"]["account_group"] != "binance-spot"
     assert bots["short-keltner-hl"]["account_group"] != "binance-spot"
 
 
@@ -52,6 +54,7 @@ def test_strategy_kinds_distinguish_copiers_from_autonomous_bots():
     bots = _by_key()
     assert bots["killers-ft"]["strategy_kind"] == "copy-trader"
     assert bots["insiders-ft"]["strategy_kind"] == "copy-trader"
+    assert bots["altsignals-ft"]["strategy_kind"] == "copy-trader"
     assert bots["short-keltner-hl"]["strategy_kind"] == "autonomous-quant"
     assert bots["oi-trend"]["strategy_kind"] == "autonomous-quant"
 
