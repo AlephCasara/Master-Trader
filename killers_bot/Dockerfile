@@ -20,6 +20,7 @@ COPY confidence_gate.json /app/killers_bot/confidence_gate.json
 COPY rules_classifier.py /app/killers_bot/rules_classifier.py
 COPY simulator.py /app/killers_bot/simulator.py
 COPY strict_open.py /app/killers_bot/strict_open.py
+COPY altsignals_rules.py /app/killers_bot/altsignals_rules.py
 COPY observer.py /app/killers_bot/observer.py
 COPY schema.sql /app/killers_bot/schema.sql
 

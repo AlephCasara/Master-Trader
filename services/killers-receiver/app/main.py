@@ -399,7 +399,7 @@ async def get_binance_mark_price(symbol: str,
             ctx = session.get(url, params={"symbol": binance_sym}, timeout=timeout)
             async with ctx as r:
                 return await _parse_binance_mark(r, binance_sym)
-        async with aiohttp.ClientSession(timeout=timeout) as s:
+        async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as s:
             async with s.get(url, params={"symbol": binance_sym}) as r:
                 return await _parse_binance_mark(r, binance_sym)
     except Exception as e:
@@ -444,7 +444,7 @@ async def get_hyperliquid_mark_price(symbol: str,
             ctx = session.post(url, json={"type": "allMids"}, timeout=timeout)
             async with ctx as r:
                 return await _parse_hyperliquid_mid(r, coin)
-        async with aiohttp.ClientSession(timeout=timeout) as s:
+        async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as s:
             async with s.post(url, json={"type": "allMids"}) as r:
                 return await _parse_hyperliquid_mid(r, coin)
     except Exception as e:
@@ -1021,7 +1021,7 @@ async def ft_force_enter(
             txt = await r.text()
             return {"status": r.status, "body": txt}
     auth = aiohttp.BasicAuth(cfg.ft_user, cfg.ft_pass)
-    async with aiohttp.ClientSession() as s:
+    async with aiohttp.ClientSession(trust_env=True) as s:
         async with s.post(url, json=body, auth=auth, timeout=timeout) as r:
             txt = await r.text()
             return {"status": r.status, "body": txt}
@@ -1078,7 +1078,7 @@ async def ft_force_exit(cfg: Config, trade_id: int,
             txt = await r.text()
             return {"status": r.status, "body": txt}
     auth = aiohttp.BasicAuth(cfg.ft_user, cfg.ft_pass)
-    async with aiohttp.ClientSession() as s:
+    async with aiohttp.ClientSession(trust_env=True) as s:
         async with s.post(url, json=body, auth=auth, timeout=timeout) as r:
             txt = await r.text()
             return {"status": r.status, "body": txt}
@@ -1095,7 +1095,7 @@ async def ft_get_trade(cfg: Config, trade_id: int,
                     return await r.json()
                 return None
         auth = aiohttp.BasicAuth(cfg.ft_user, cfg.ft_pass)
-        async with aiohttp.ClientSession() as s:
+        async with aiohttp.ClientSession(trust_env=True) as s:
             async with s.get(url, auth=auth, timeout=timeout) as r:
                 if r.status == 200:
                     return await r.json()
@@ -1131,7 +1131,7 @@ async def ft_force_exit_limit(cfg: Config, trade_id: int, amount: float,
             txt = await r.text()
             return {"status": r.status, "body": txt}
     auth = aiohttp.BasicAuth(cfg.ft_user, cfg.ft_pass)
-    async with aiohttp.ClientSession() as s:
+    async with aiohttp.ClientSession(trust_env=True) as s:
         async with s.post(url, json=body, auth=auth, timeout=timeout) as r:
             txt = await r.text()
             return {"status": r.status, "body": txt}
@@ -1160,7 +1160,7 @@ async def ft_cancel_open_order(cfg: Config, trade_id: int,
             txt = await r.text()
             return {"status": r.status, "body": txt}
     auth = aiohttp.BasicAuth(cfg.ft_user, cfg.ft_pass)
-    async with aiohttp.ClientSession() as s:
+    async with aiohttp.ClientSession(trust_env=True) as s:
         async with s.delete(url, auth=auth, timeout=timeout) as r:
             txt = await r.text()
             return {"status": r.status, "body": txt}
@@ -1184,7 +1184,7 @@ async def ft_open_trades(cfg: Config, session=None) -> Optional[list[dict]]:
                 logger.warning("ft_open_trades non-200 status=%d", r.status)
                 return None
         auth = aiohttp.BasicAuth(cfg.ft_user, cfg.ft_pass)
-        async with aiohttp.ClientSession() as s:
+        async with aiohttp.ClientSession(trust_env=True) as s:
             async with s.get(url, auth=auth, timeout=timeout) as r:
                 if r.status == 200:
                     return await r.json()
@@ -2347,8 +2347,8 @@ async def lifespan(app: FastAPI):
     # without rebuilding the credential. `public_session` is for unauthed
     # endpoints (Binance public API, trade-webhook notify).
     ft_auth = aiohttp.BasicAuth(cfg.ft_user, cfg.ft_pass)
-    app.state.ft_session = aiohttp.ClientSession(auth=ft_auth)
-    app.state.public_session = aiohttp.ClientSession()
+    app.state.ft_session = aiohttp.ClientSession(auth=ft_auth, trust_env=True)
+    app.state.public_session = aiohttp.ClientSession(trust_env=True)
     # Track background notify tasks so we can drain on shutdown.
     app.state.notify_tasks = set()
     # Phase 2 cascade serialization: the background reconcile loop
@@ -2863,7 +2863,7 @@ async def _notify_telegram(cfg: Config, text: str, session=None) -> None:
                 await r.read()
                 _warn_notify_rejected(r.status)
             return
-        async with aiohttp.ClientSession(timeout=timeout) as s:
+        async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as s:
             async with s.post(cfg.notify_url, json=payload, headers=headers) as r:
                 await r.read()
                 _warn_notify_rejected(r.status)

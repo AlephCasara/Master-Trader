@@ -45,6 +45,9 @@ LIVE_CONFIGS = [
 EXPECTED_SLUGS = {
     "KELTNER", "FUNDINGFADE", "OITREND", "KILLERS", "INSIDERS", "SHORTKELTNER",
 }
+# The altsignals bot is deployed outside docker-compose.prod.yml, so only the
+# dashboard (which polls it) knows its slug.
+DASHBOARD_ONLY_SLUGS = {"ALTSIGNALS"}
 
 
 @pytest.fixture(scope="module")
@@ -467,7 +470,7 @@ def test_per_bot_credential_slugs_agree_across_compose_api_utils_dashboard(compo
 
     assert compose_slugs == EXPECTED_SLUGS, compose_slugs
     assert api_utils_slugs == EXPECTED_SLUGS, api_utils_slugs
-    assert dashboard_slugs == EXPECTED_SLUGS, dashboard_slugs
+    assert dashboard_slugs == EXPECTED_SLUGS | DASHBOARD_ONLY_SLUGS, dashboard_slugs
 
 
 @pytest.mark.parametrize(

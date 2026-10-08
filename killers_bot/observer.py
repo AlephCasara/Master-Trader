@@ -15,11 +15,12 @@ import sys
 import time
 from collections import deque
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Optional
 
-from . import (classifier, classify_queue, confidence_gate, rules_classifier,
-               simulator, strict_open)
+from . import (altsignals_rules, classifier, classify_queue, confidence_gate,
+               rules_classifier, simulator, strict_open)
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +106,12 @@ class Config:
         # is Killers-only, so it's disabled for insiders).
         self.classifier_template = classifier.PROMPT_TEMPLATE
         self.use_fast_path = True
+        # Lane-specific deterministic parser, called as
+        # fast_path_fn(text, msg_id, conn, date). When set it replaces
+        # strict_open and its result is FINAL (never None, no LLM fallthrough);
+        # shadow_llm=False also skips the background Claude comparison.
+        self.fast_path_fn = None
+        self.shadow_llm = True
         # Gate de confianca em SHADOW (#65): so grava o veredito, nunca
         # bloqueia. Um gate que so observa nao pode derrubar o encaminhamento:
         # arquivo malformado vira shadow sem limiares + ERROR (o CI valida o
@@ -452,13 +459,20 @@ async def _classify_and_forward(client, channel_id, conn, config, msg_dict: dict
         # that isn't a complete single-coin open. Claude still runs in shadow
         # after the receiver POST so any disagreement is visible.
         text = msg_dict.get("text") or msg_dict.get("message") or ""
-        classification = (
-            strict_open.is_strict_killers_open(text, msg_id)
-            if config.use_fast_path else None
-        )
-        used_fast_path = classification is not None
-        source_label = "rule" if used_fast_path else "claude"
-        if classification is None and getattr(config, "rules_primary", False):
+        fast_path_fn = getattr(config, "fast_path_fn", None)
+        if fast_path_fn is not None:
+            classification = fast_path_fn(text, msg_id, conn, msg_dict.get("date"))
+            used_fast_path = True
+            source_label = "altsignals"
+        else:
+            classification = (
+                strict_open.is_strict_killers_open(text, msg_id)
+                if config.use_fast_path else None
+            )
+            used_fast_path = classification is not None
+            source_label = "rule" if used_fast_path else "claude"
+        if (classification is None and fast_path_fn is None
+                and getattr(config, "rules_primary", False)):
             # Classificador de regras (#74). Recusa em qualquer ambiguidade; so
             # decide os tipos em PRIMARY_KINDS. O Claude roda em shadow depois.
             declared = lookup_declared_targets(conn, text, msg_id)
@@ -544,8 +558,9 @@ async def _classify_and_forward(client, channel_id, conn, config, msg_dict: dict
             # #95: o corpo exato vai para a fila ANTES do POST. Se a entrega
             # falhar (ou o processo cair no meio dela), a nova tentativa
             # reenvia este corpo, sem reclassificar.
-            classify_queue.set_payload(conn, msg_id, _receiver_body(msg_dict, classification))
-            err = await _post_to_receiver(config.receiver_url, msg_dict, classification,
+            receiver_msg = _receiver_msg(msg_dict, classification)
+            classify_queue.set_payload(conn, msg_id, _receiver_body(receiver_msg, classification))
+            err = await _post_to_receiver(config.receiver_url, receiver_msg, classification,
                                           getattr(config, "receiver_token", ""))
             if err is not None:
                 await _processing_failed(conn, config, msg_dict,
@@ -570,7 +585,7 @@ async def _classify_and_forward(client, channel_id, conn, config, msg_dict: dict
     # Shadow Claude after the fast-path decision is already in flight. Logs
     # disagreement but never blocks the receiver POST. Skip if Claude was
     # already the primary classifier (no shadow needed).
-    if used_fast_path:
+    if used_fast_path and getattr(config, "shadow_llm", True):
         asyncio.create_task(
             _shadow_classify(msg_dict, chain, classification, config,
                              conn=conn, source_label=source_label),
@@ -675,6 +690,22 @@ DELIVERY = "delivery"
 def _receiver_body(msg: dict, classification: dict) -> str:
     """Corpo do POST /event. Mesmo formato que `_post_to_receiver` envia."""
     return json.dumps({"msg": msg, "classification": classification}, default=str)
+
+
+def _targets_line(targets: list) -> str:
+    """The receiver builds its TP ladder only from a `TARGETS:` text line."""
+    return "TARGETS: " + " - ".join(format(Decimal(repr(float(t))), "f") for t in targets)
+
+
+def _receiver_msg(msg: dict, classification: dict) -> dict:
+    """Copy of the message as the receiver should see it. An `open` carrying a
+    parsed `targets` list gets the `TARGETS:` line appended to its text; the
+    stored raw message is never touched. Anything else is returned as is."""
+    targets = classification.get("targets")
+    if classification.get("kind") != "open" or not targets:
+        return msg
+    text = msg.get("text") or msg.get("message") or ""
+    return {**msg, "text": f"{text}\n{_targets_line(targets)}"}
 
 
 async def _processing_failed(conn, config, msg_dict: dict, reason: str,
@@ -1111,15 +1142,22 @@ def _insiders_config() -> "Optional[Config]":
 
 
 def _trial_configs() -> "list[tuple[str, Config]]":
-    """Capture-only fan-outs for candidate channels (bd Master-Trader-krl).
+    """Fan-outs for candidate channels (bd Master-Trader-krl).
 
     TRIAL_CHANNELS=name:-1001655061968[,name:-100...] subscribes to extra
     channels on the SAME session/client. Each gets its own DB under the same
-    directory as KILLERS_DB (trial-<name>-state.sqlite) and NEVER a receiver:
-    raw capture only, no classifier, no paper sim; the formats are unknown
-    by design and a channel earns a tuned classifier (and later a bot) only
-    after its capture is measured. Bad entries are logged and skipped: config
-    noise must not take down the feeds that already trade.
+    directory as KILLERS_DB (trial-<name>-state.sqlite) and, by default, NO
+    receiver: raw capture only, no classifier, no paper sim; the formats are
+    unknown by design and a channel earns a tuned classifier (and later a bot)
+    only after its capture is measured.
+
+    Forwarding is opt-in per channel: TRIAL_<NAME>_RECEIVER_URL (NAME = the
+    upper-cased trial name) turns capture-only off and posts to that receiver
+    with TRIAL_<NAME>_RECEIVER_TOKEN. The "altsignals" trial then classifies
+    with its own deterministic parser (altsignals_rules), no LLM.
+
+    Bad entries are logged and skipped: config noise must not take down the
+    feeds that already trade.
     """
     raw = os.getenv("TRIAL_CHANNELS", "")
     if not raw.strip():
@@ -1144,6 +1182,16 @@ def _trial_configs() -> "list[tuple[str, Config]]":
         t.shadow_rules = False
         t.rules_primary = False
         t.capture_only = True
+        env_name = name.upper()
+        receiver_url = os.getenv(f"TRIAL_{env_name}_RECEIVER_URL", "").strip()
+        if receiver_url:
+            t.capture_only = False
+            t.receiver_url = receiver_url
+            t.receiver_token = os.getenv(f"TRIAL_{env_name}_RECEIVER_TOKEN", "")
+            t.feed_label = name
+            if env_name == "ALTSIGNALS":
+                t.fast_path_fn = altsignals_rules.classify_altsignals
+                t.shadow_llm = False
         trials.append((name, t))
     return trials
 
